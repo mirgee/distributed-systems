@@ -165,6 +165,12 @@ impl Participant {
         while self.running.load(Ordering::SeqCst) {
             match self.rx.try_recv() {
                 Ok(message) => {
+                    self.log.append(
+                        message.mtype,
+                        message.txid.clone(),
+                        message.senderid.clone(),
+                        message.opid,
+                    );
                     self.perform_operation(&message);
                 }
                 Err(_) => {

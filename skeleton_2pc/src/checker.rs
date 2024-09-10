@@ -40,12 +40,19 @@ fn check_participant(
     let num_participant_local_commit = participant_local_commit_map.len();
     let num_participant_abort = participant_abort_map.len();
 
+    info!("{participant}: C {num_participant_commit}; LC {num_participant_local_commit}; A {num_participant_abort}");
+
     result &= num_participant_commit <= num_commit;
     result &= num_participant_local_commit >= num_commit;
     result &= num_participant_abort <= num_abort;
 
+    trace!("{num_participant_commit} <= {num_commit}");
     assert!(num_participant_commit <= num_commit);
+
+    trace!("{num_commit} <= {num_participant_local_commit}");
     assert!(num_commit <= num_participant_local_commit);
+
+    trace!("{num_abort} >= {num_participant_abort}");
     assert!(num_abort >= num_participant_abort);
 
     for (_, coord_msg) in coord_committed.iter() {
@@ -115,8 +122,11 @@ pub fn check_last_run(
     let num_commit = committed.len();
     let num_abort = aborted.len();
 
+    info!("CG {num_commit:?}; AG {num_abort:?}");
+
     // Iterate and check each participant
     for pid in 0..num_participants {
+        info!("Checking participant number {pid:?}");
         let participant_id_str = format!("participant_{}", pid);
         let participant_log_path = format!("{}//{}.log", log_path, participant_id_str);
         let participant_oplog = OpLog::from_file(participant_log_path);

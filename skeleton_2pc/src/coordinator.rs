@@ -140,15 +140,15 @@ impl Coordinator {
                         )
                     };
 
+                    self.log.append(
+                        coordinator_participant_response.mtype,
+                        coordinator_participant_response.txid.clone(),
+                        coordinator_participant_response.senderid.clone(),
+                        coordinator_participant_response.opid,
+                    );
                     for (participant_name, (participant_tx, participant_rx)) in
                         self.participants.iter()
                     {
-                        self.log.append(
-                            coordinator_participant_response.mtype,
-                            coordinator_participant_response.txid.clone(),
-                            coordinator_participant_response.senderid.clone(),
-                            coordinator_participant_response.opid,
-                        );
                         participant_tx
                             .send(coordinator_participant_response.clone())
                             .unwrap();
