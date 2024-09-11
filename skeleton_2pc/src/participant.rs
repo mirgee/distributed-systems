@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
+use ipc_channel::ipc::TryRecvError;
 use participant::ipc_channel::ipc::IpcReceiver as Receiver;
 use participant::ipc_channel::ipc::IpcSender as Sender;
 use participant::rand::prelude::*;
@@ -63,20 +64,19 @@ impl Participant {
         }
     }
 
-    pub fn send(&mut self, pm: ProtocolMessage) {
-        let x: f64 = random();
-        if x <= self.send_success_prob {
+    fn send(&mut self, pm: ProtocolMessage) {
+        if random::<f64>() <= self.send_success_prob {
             trace!("{}::Sent message", self.id_str.clone());
             self.log
                 .append(pm.mtype, pm.txid.clone(), pm.senderid.clone(), pm.opid);
             self.tx.send(pm).unwrap();
         } else {
             trace!("{}::Failed to send message", self.id_str.clone());
-            self.move_state(ParticipantState::Quiescent)
+            self.transition_to(ParticipantState::Quiescent)
         }
     }
 
-    fn move_state(&mut self, state: ParticipantState) {
+    fn transition_to(&mut self, state: ParticipantState) {
         trace!(
             "{}::Moving state from {:?} to {:?}",
             self.id_str.clone(),
@@ -86,60 +86,80 @@ impl Participant {
         self.state = state;
     }
 
-    pub fn perform_operation(&mut self, request: &ProtocolMessage) {
+    fn receive(&mut self) -> Result<ProtocolMessage, TryRecvError> {
+        match self.rx.try_recv() {
+            Ok(message) => {
+                self.log.append(
+                    message.mtype,
+                    message.txid.clone(),
+                    message.senderid.clone(),
+                    message.opid,
+                );
+                Ok(message)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn handle_propose(&mut self, request: &ProtocolMessage) {
+        assert_eq!(self.state, ParticipantState::Quiescent);
+        self.stats.unknown += 1;
+        self.transition_to(ParticipantState::ReceivedP1);
+        let response = if random::<f64>() <= self.operation_success_prob {
+            self.transition_to(ParticipantState::VotedCommit);
+            ProtocolMessage::generate(
+                MessageType::ParticipantVoteCommit,
+                request.txid.clone(),
+                self.id_str.clone(),
+                request.opid,
+            )
+        } else {
+            self.transition_to(ParticipantState::VotedAbort);
+            ProtocolMessage::generate(
+                MessageType::ParticipantVoteAbort,
+                request.txid.clone(),
+                self.id_str.clone(),
+                request.opid,
+            )
+        };
+
+        self.send(response);
+        self.transition_to(ParticipantState::AwaitingGlobalDecision);
+    }
+
+    fn handle_abort(&mut self, message: &ProtocolMessage) {
+        assert_eq!(self.state, ParticipantState::AwaitingGlobalDecision);
+        assert_eq!(message.mtype, MessageType::CoordinatorAbort);
+        self.stats.unknown -= 1;
+        self.stats.aborted += 1;
+        self.state = ParticipantState::Quiescent;
+    }
+
+    fn handle_commit(&mut self, message: &ProtocolMessage) {
+        assert_eq!(self.state, ParticipantState::AwaitingGlobalDecision);
+        assert_eq!(message.mtype, MessageType::CoordinatorCommit);
+        self.stats.unknown -= 1;
+        self.stats.committed += 1;
+        self.state = ParticipantState::Quiescent;
+    }
+
+    fn perform_operation(&mut self, request: &ProtocolMessage) {
         // TODO: We should write the transaction to a WAL after receiving propose
         trace!(
             "{}::Performing operation on message {:?}",
             self.id_str.clone(),
             request
         );
-        let x: f64 = random();
         match request.mtype {
-            MessageType::CoordinatorPropose => {
-                assert_eq!(self.state, ParticipantState::Quiescent);
-                self.stats.unknown += 1;
-                self.move_state(ParticipantState::ReceivedP1);
-                let response = if x <= self.operation_success_prob {
-                    self.move_state(ParticipantState::VotedCommit);
-                    ProtocolMessage::generate(
-                        MessageType::ParticipantVoteCommit,
-                        request.txid.clone(),
-                        self.id_str.clone(),
-                        request.opid,
-                    )
-                } else {
-                    self.move_state(ParticipantState::VotedAbort);
-                    ProtocolMessage::generate(
-                        MessageType::ParticipantVoteAbort,
-                        request.txid.clone(),
-                        self.id_str.clone(),
-                        request.opid,
-                    )
-                };
-
-                self.send(response);
-                self.move_state(ParticipantState::AwaitingGlobalDecision);
-            }
-            MessageType::CoordinatorAbort => {
-                assert_eq!(self.state, ParticipantState::AwaitingGlobalDecision);
-                self.stats.unknown -= 1;
-                self.stats.aborted += 1;
-                self.state = ParticipantState::Quiescent;
-            }
-            MessageType::CoordinatorCommit => {
-                assert_eq!(self.state, ParticipantState::AwaitingGlobalDecision);
-                self.stats.unknown -= 1;
-                self.stats.committed += 1;
-                self.state = ParticipantState::Quiescent;
-            }
-            MessageType::CoordinatorExit => {
-                self.running.store(false, Ordering::SeqCst);
-            }
+            MessageType::CoordinatorPropose => self.handle_propose(request),
+            MessageType::CoordinatorAbort => self.handle_abort(request),
+            MessageType::CoordinatorCommit => self.handle_commit(request),
+            MessageType::CoordinatorExit => self.running.store(false, Ordering::SeqCst),
             _ => panic!(),
         }
     }
 
-    pub fn report_status(&mut self) {
+    fn report_status(&mut self) {
         println!(
             "{:16}:\tCommitted: {:6}\tAborted: {:6}\tUnknown: {:6}",
             self.id_str.clone(),
@@ -149,7 +169,7 @@ impl Participant {
         );
     }
 
-    pub fn wait_for_exit_signal(&mut self) {
+    fn wait_for_exit_signal(&mut self) {
         trace!("{}::Waiting for exit signal", self.id_str.clone());
 
         while self.running.load(Ordering::SeqCst) {
@@ -163,14 +183,8 @@ impl Participant {
         trace!("{}::Beginning protocol", self.id_str.clone());
 
         while self.running.load(Ordering::SeqCst) {
-            match self.rx.try_recv() {
+            match self.receive() {
                 Ok(message) => {
-                    self.log.append(
-                        message.mtype,
-                        message.txid.clone(),
-                        message.senderid.clone(),
-                        message.opid,
-                    );
                     self.perform_operation(&message);
                 }
                 Err(_) => {
