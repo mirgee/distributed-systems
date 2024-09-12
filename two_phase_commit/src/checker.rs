@@ -1,14 +1,7 @@
-extern crate clap;
-extern crate ctrlc;
-extern crate log;
-extern crate stderrlog;
-
 use std::collections::HashMap;
 
-use message;
-use message::MessageType;
-use message::ProtocolMessage;
-use oplog::OpLog;
+use crate::message::{self, ProtocolMessage, MessageType};
+use crate::oplog::OpLog;
 
 fn check_participant(
     participant: &String,

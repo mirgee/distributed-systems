@@ -1,9 +1,6 @@
-extern crate serde;
-extern crate serde_json;
-
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use self::serde_json::Value;
+use serde_json::Value;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageType {

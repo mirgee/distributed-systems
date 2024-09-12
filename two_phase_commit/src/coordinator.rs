@@ -1,20 +1,15 @@
-extern crate ipc_channel;
-extern crate log;
-extern crate rand;
-extern crate stderrlog;
-
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use coordinator::ipc_channel::ipc::IpcReceiver as Receiver;
-use coordinator::ipc_channel::ipc::IpcSender as Sender;
+use ipc_channel::ipc::IpcReceiver as Receiver;
+use ipc_channel::ipc::IpcSender as Sender;
 
-use message::MessageType;
-use message::ProtocolMessage;
-use oplog;
+use crate::message::MessageType;
+use crate::message::ProtocolMessage;
+use crate::oplog;
 
 use crate::Stats;
 

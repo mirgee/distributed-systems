@@ -1,7 +1,3 @@
-extern crate bincode;
-extern crate serde;
-extern crate serde_json;
-
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::prelude::*;
@@ -9,7 +5,7 @@ use std::io::BufReader;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use message;
+use crate::message;
 
 #[derive(Debug)]
 pub struct OpLog {

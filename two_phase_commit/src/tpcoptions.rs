@@ -1,9 +1,5 @@
-extern crate clap;
-extern crate log;
-extern crate stderrlog;
-use clap::{App, Arg};
+use clap::{value_parser, Arg, Command};
 
-extern crate ctrlc;
 #[derive(Clone, Debug)]
 pub struct TPCOptions {
     pub send_success_probability: f64,
@@ -31,100 +27,89 @@ impl TPCOptions {
         let default_ipc_path = "none";
         let default_num = "0";
 
-        let matches = App::new("two-phase-commit")
+        let matches = Command::new("two-phase-commit")
             .version("0.1.0")
             .author("Miroslav Kovar")
             .about("Two-phase commit protocol")
-            .arg(Arg::with_name("send_success_probability")
-                    .short("S")
-                    .required(false)
-                    .takes_value(true)
+            .arg(Arg::new("send_success_probability")
+                    .short('S')
+                    .value_parser(value_parser!(f64))
                     .help("Probability participants successfully send messages"))
-            .arg(Arg::with_name("operation_success_probability")
-                    .short("s")
-                    .required(false)
-                    .takes_value(true)
+            .arg(Arg::new("operation_success_probability")
+                    .short('s')
+                    .value_parser(value_parser!(f64))
                     .help("Probability participants successfully execute requests"))
-            .arg(Arg::with_name("num_clients")
-                    .short("c")
-                    .required(false)
-                    .takes_value(true)
+            .arg(Arg::new("num_clients")
+                    .short('c')
+                    .value_parser(value_parser!(u32))
                     .help("Number of clients making requests"))
-            .arg(Arg::with_name("num_participants")
-                    .short("p")
-                    .required(false)
-                    .takes_value(true)
+            .arg(Arg::new("num_participants")
+                    .short('p')
+                    .value_parser(value_parser!(u32))
                     .help("Number of participants in protocol"))
-            .arg(Arg::with_name("num_requests")
-                    .short("r")
-                    .required(false)
-                    .takes_value(true)
+            .arg(Arg::new("num_requests")
+                    .short('r')
+                    .value_parser(value_parser!(u32))
                     .help("Number of requests made per client"))
-            .arg(Arg::with_name("verbosity")
-                    .short("v")
-                    .required(false)
-                    .takes_value(true)
+            .arg(Arg::new("verbosity")
+                    .short('v')
+                    .value_parser(value_parser!(usize))
                     .help("Output verbosity: 0->No Output, 5->Output Everything"))
-            .arg(Arg::with_name("log_path")
-                    .short("l")
-                    .required(false)
-                    .takes_value(true)
+            .arg(Arg::new("log_path")
+                    .short('l')
+                    .value_parser(value_parser!(String))
                     .help("Specifies path to directory where logs are stored"))
-            .arg(Arg::with_name("mode")
-                    .short("m")
-                    .required(false)
-                    .takes_value(true)
+            .arg(Arg::new("mode")
+                    .short('m')
+                    .value_parser(value_parser!(String))
                     .help("Mode: \"run\" starts 2PC, \"client\" starts a client process, \"participant\" starts a participant process, \"check\" checks logs produced by previous run"))
-            .arg(Arg::with_name("ipc_path")
+            .arg(Arg::new("ipc_path")
                     .long("ipc_path")
-                    .required(false)
-                    .takes_value(true)
+                    .value_parser(value_parser!(String))
                     .help("Path for IPC socket for communication"))
-            .arg(Arg::with_name("num")
+            .arg(Arg::new("num")
                     .long("num")
-                    .required(false)
-                    .takes_value(true)
+                    .value_parser(value_parser!(u32))
                     .help("Participant / Client number for naming the log files. Ranges from 0 to num_clients - 1 or num_participants - 1"))
             .get_matches();
 
-        let mode = matches.value_of("mode").unwrap_or(default_mode);
-        let operation_success_probability = matches
-            .value_of("operation_success_probability")
-            .unwrap_or(default_operation_success_probability)
-            .parse::<f64>()
-            .unwrap();
-        let send_success_probability = matches
-            .value_of("send_success_probability")
-            .unwrap_or(default_send_success_probability)
-            .parse::<f64>()
-            .unwrap();
-        let num_clients = matches
-            .value_of("num_clients")
-            .unwrap_or(default_num_clients)
-            .parse::<u32>()
-            .unwrap();
-        let num_participants = matches
-            .value_of("num_participants")
-            .unwrap_or(default_num_participants)
-            .parse::<u32>()
-            .unwrap();
-        let num_requests = matches
-            .value_of("num_requests")
-            .unwrap_or(default_num_requests)
-            .parse::<u32>()
-            .unwrap();
-        let verbosity = matches
-            .value_of("verbosity")
-            .unwrap_or(default_verbosity)
-            .parse::<usize>()
-            .unwrap();
-        let log_path = matches.value_of("log_path").unwrap_or(default_log_path);
-        let ipc_path = matches.value_of("ipc_path").unwrap_or(default_ipc_path);
-        let num = matches
-            .value_of("num")
-            .unwrap_or(default_num)
-            .parse::<u32>()
-            .unwrap();
+        let mode = matches
+            .get_one::<String>("mode")
+            .unwrap_or(&default_mode.to_string())
+            .to_string();
+        let operation_success_probability = *matches
+            .get_one::<f64>("operation_success_probability")
+            .unwrap_or(
+                &default_operation_success_probability
+                    .parse::<f64>()
+                    .unwrap(),
+            );
+        let send_success_probability = *matches
+            .get_one::<f64>("send_success_probability")
+            .unwrap_or(&default_send_success_probability.parse::<f64>().unwrap());
+        let num_clients = *matches
+            .get_one::<u32>("num_clients")
+            .unwrap_or(&default_num_clients.parse::<u32>().unwrap());
+        let num_participants = *matches
+            .get_one::<u32>("num_participants")
+            .unwrap_or(&default_num_participants.parse::<u32>().unwrap());
+        let num_requests = *matches
+            .get_one::<u32>("num_requests")
+            .unwrap_or(&default_num_requests.parse::<u32>().unwrap());
+        let verbosity = *matches
+            .get_one::<usize>("verbosity")
+            .unwrap_or(&default_verbosity.parse::<usize>().unwrap());
+        let log_path = matches
+            .get_one::<String>("log_path")
+            .unwrap_or(&default_log_path.to_string())
+            .to_string();
+        let ipc_path = matches
+            .get_one::<String>("ipc_path")
+            .unwrap_or(&default_ipc_path.to_string())
+            .to_string();
+        let num = *matches
+            .get_one::<u32>("num")
+            .unwrap_or(&default_num.parse::<u32>().unwrap());
 
         match mode.as_ref() {
             "run" => {}
@@ -149,9 +134,9 @@ impl TPCOptions {
             num_participants,
             num_requests,
             verbosity,
-            mode: mode.to_string(),
-            log_path: log_path.to_string(),
-            ipc_path: ipc_path.to_string(),
+            mode,
+            log_path,
+            ipc_path,
             num,
         }
     }

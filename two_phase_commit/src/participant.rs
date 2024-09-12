@@ -1,21 +1,16 @@
-extern crate ipc_channel;
-extern crate log;
-extern crate rand;
-extern crate stderrlog;
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 
 use ipc_channel::ipc::TryRecvError;
-use participant::ipc_channel::ipc::IpcReceiver as Receiver;
-use participant::ipc_channel::ipc::IpcSender as Sender;
-use participant::rand::prelude::*;
+use ipc_channel::ipc::IpcReceiver as Receiver;
+use ipc_channel::ipc::IpcSender as Sender;
+use rand::prelude::*;
 
-use message::MessageType;
-use message::ProtocolMessage;
-use oplog;
+use crate::message::MessageType;
+use crate::message::ProtocolMessage;
+use crate::oplog;
 
 use crate::Stats;
 

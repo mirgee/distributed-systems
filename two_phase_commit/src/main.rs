@@ -1,9 +1,14 @@
 #[macro_use]
 extern crate log;
-extern crate clap;
-extern crate ctrlc;
-extern crate ipc_channel;
-extern crate stderrlog;
+
+pub mod checker;
+pub mod client;
+pub mod coordinator;
+pub mod message;
+pub mod oplog;
+pub mod participant;
+pub mod tpcoptions;
+
 use client::Client;
 use coordinator::Coordinator;
 use ipc_channel::ipc::channel;
@@ -16,13 +21,6 @@ use std::fs;
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-pub mod checker;
-pub mod client;
-pub mod coordinator;
-pub mod message;
-pub mod oplog;
-pub mod participant;
-pub mod tpcoptions;
 use message::ProtocolMessage;
 
 #[derive(Debug, Default)]

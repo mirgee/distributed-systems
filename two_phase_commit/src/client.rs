@@ -1,17 +1,11 @@
-extern crate ipc_channel;
-extern crate log;
-extern crate stderrlog;
-
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 use std::thread::sleep;
 use std::time::Duration;
 
-use client::ipc_channel::ipc::IpcReceiver as Receiver;
-use client::ipc_channel::ipc::IpcSender as Sender;
+use ipc_channel::ipc::IpcReceiver as Receiver;
+use ipc_channel::ipc::IpcSender as Sender;
 
-use message::MessageType;
-
+use crate::message::MessageType;
 use crate::message::ProtocolMessage;
 use crate::Stats;
 
