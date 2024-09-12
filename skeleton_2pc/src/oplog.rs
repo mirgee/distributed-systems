@@ -15,7 +15,6 @@ use message;
 pub struct OpLog {
     seqno: u32,
     log_arc: Arc<Mutex<HashMap<u32, message::ProtocolMessage>>>,
-    path: String,
     lf: File,
 }
 
@@ -27,7 +26,6 @@ impl OpLog {
         OpLog {
             seqno: 0,
             log_arc: arc,
-            path: fpath.to_string(),
             lf: File::create(fpath).unwrap(),
         }
     }
@@ -35,7 +33,6 @@ impl OpLog {
     pub fn from_file(fpath: String) -> OpLog {
         let mut seqno = 0;
         let mut l = HashMap::new();
-        let scopy = fpath.clone();
         let tlf = File::open(fpath).unwrap();
         let mut reader = BufReader::new(&tlf);
         let mut line = String::new();
@@ -54,7 +51,6 @@ impl OpLog {
         OpLog {
             seqno,
             log_arc: arc,
-            path: scopy,
             lf: tlf,
         }
     }
