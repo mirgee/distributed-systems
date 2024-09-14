@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -25,14 +24,14 @@ pub enum CoordinatorState {
     SentGlobalDecision,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Coordinator {
     state: CoordinatorState,
     running: Arc<AtomicBool>,
     log: Arc<Mutex<oplog::OpLog>>,
-    stats: Stats,
-    participants: HashMap<String, (Sender<ProtocolMessage>, Receiver<ProtocolMessage>)>,
-    clients: HashMap<String, (Sender<ProtocolMessage>, Receiver<ProtocolMessage>)>,
+    stats: Arc<Mutex<Stats>>,
+    participants: Arc<Mutex<HashMap<String, (Sender<ProtocolMessage>, Arc<Mutex<Receiver<ProtocolMessage>>>)>>>,
+    clients: Arc<Mutex<HashMap<String, (Sender<ProtocolMessage>, Arc<Mutex<Receiver<ProtocolMessage>>>)>>>,
 }
 
 impl Coordinator {
@@ -41,9 +40,9 @@ impl Coordinator {
             state: CoordinatorState::Quiescent,
             log: Arc::new(Mutex::new(oplog::OpLog::new(log_path))),
             running: r.clone(),
-            stats: Stats::default(),
-            participants: HashMap::new(),
-            clients: HashMap::new(),
+            stats: Default::default(),
+            participants: Default::default(),
+            clients: Default::default(),
         }
     }
 
@@ -54,7 +53,7 @@ impl Coordinator {
         rx: Receiver<ProtocolMessage>,
     ) {
         assert!(self.state == CoordinatorState::Quiescent);
-        self.participants.insert(name.clone(), (tx, rx));
+        self.participants.lock().unwrap().insert(name.clone(), (tx, Arc::new(Mutex::new(rx))));
     }
 
     pub fn client_join(
@@ -64,33 +63,39 @@ impl Coordinator {
         rx: Receiver<ProtocolMessage>,
     ) {
         assert!(self.state == CoordinatorState::Quiescent);
-        self.clients.insert(name.clone(), (tx, rx));
+        self.clients.lock().unwrap().insert(name.clone(), (tx, Arc::new(Mutex::new(rx))));
     }
 
     fn report_status(&mut self) {
         println!(
             "Coordinator    :\tCommitted: {:6}\tAborted: {:6}\tUnknown: {:6}",
-            self.stats.committed, self.stats.aborted, self.stats.unknown,
+            self.stats.lock().unwrap().committed, self.stats.lock().unwrap().aborted, self.stats.lock().unwrap().unknown,
         );
     }
 
-    fn collect_participant_responses(&self) -> Vec<ProtocolMessage> {
-        let mut responses = vec![];
-        for (_, participant_rx) in self.participants.values() {
-            let participant_response = participant_rx.recv().unwrap();
+    async fn collect_participant_responses(
+        &self,
+        mut rx: tokio::sync::mpsc::Receiver<(String, ProtocolMessage)>,
+    ) -> Vec<ProtocolMessage> {
+        let mut responses = Vec::new();
+        while let Some((participant_name, response)) = rx.recv().await {
             self.log.lock().unwrap().append(
-                participant_response.mtype,
-                participant_response.txid.clone(),
-                participant_response.senderid.clone(),
-                participant_response.opid,
+                response.mtype,
+                response.txid.clone(),
+                response.senderid.clone(),
+                response.opid,
             );
-            responses.push(participant_response);
+            responses.push(response);
+
+            if responses.len() == self.participants.lock().unwrap().len() {
+                break;
+            }
         }
 
         responses
     }
 
-    fn propose_to_participants(&self, client_request: &ProtocolMessage) {
+    async fn propose_to_participants(&self, client_request: &ProtocolMessage) {
         assert_eq!(client_request.mtype, MessageType::ClientRequest);
         let pm = ProtocolMessage::generate(
             MessageType::CoordinatorPropose,
@@ -102,31 +107,35 @@ impl Coordinator {
             .lock()
             .unwrap()
             .append(pm.mtype, pm.txid.clone(), pm.senderid.clone(), pm.opid);
-        for (participant_tx, _) in self.participants.values() {
-            participant_tx.send(pm.clone()).unwrap();
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for (participant_tx, _) in self.participants.lock().unwrap().values() {
+            let participant_tx = participant_tx.clone();
+            let pm_clone = pm.clone();
+            tasks.spawn(async move {
+                participant_tx.send(pm_clone).unwrap();
+            });
         }
+        tasks.join_all().await;
     }
 
-    fn prepare_participant_response(
-        &self,
-        client_request: &ProtocolMessage,
-        cont: bool,
-    ) -> ProtocolMessage {
-        if cont {
-            ProtocolMessage::generate(
-                MessageType::CoordinatorCommit,
-                client_request.txid.clone(),
-                SID.to_string(),
-                client_request.opid,
-            )
-        } else {
-            ProtocolMessage::generate(
-                MessageType::CoordinatorAbort,
-                client_request.txid.clone(),
-                SID.to_string(),
-                client_request.opid,
-            )
-        }
+    fn spawn_blocking_listener(
+        name: String,
+        rx: Arc<Mutex<Receiver<ProtocolMessage>>>,
+        sender: tokio::sync::mpsc::Sender<(String, ProtocolMessage)>,
+    ) {
+        std::thread::spawn(move || loop {
+            match rx.lock().unwrap().recv() {
+                Ok(received_message) => {
+                    sender
+                        .blocking_send((name.clone(), received_message))
+                        .unwrap();
+                }
+                Err(_) => {
+                    break;
+                }
+            }
+        });
     }
 
     fn prepare_client_response(
@@ -151,75 +160,64 @@ impl Coordinator {
         }
     }
 
-    fn send_client_response(
-        &self,
-        coordinator_client_response: ProtocolMessage,
-        client_tx: &Sender<ProtocolMessage>,
-    ) {
-        self.log.lock().unwrap().append(
-            coordinator_client_response.mtype,
-            coordinator_client_response.txid.clone(),
-            coordinator_client_response.senderid.clone(),
-            coordinator_client_response.opid,
-        );
-        client_tx.send(coordinator_client_response).unwrap();
-    }
-
-    fn distribute_participant_responses(&self, coordinator_participant_response: ProtocolMessage) {
-        self.log.lock().unwrap().append(
-            coordinator_participant_response.mtype,
-            coordinator_participant_response.txid.clone(),
-            coordinator_participant_response.senderid.clone(),
-            coordinator_participant_response.opid,
-        );
-        for (participant_tx, _) in self.participants.values() {
-            participant_tx
-                .send(coordinator_participant_response.clone())
-                .unwrap();
-        }
-    }
-
     fn prepare_final_decision(&self, responses: Vec<ProtocolMessage>) -> bool {
         responses
             .iter()
             .all(|r| r.mtype == MessageType::ParticipantVoteCommit)
     }
 
-    fn handle_client_request(&self, client_request: ProtocolMessage, client_tx: &Sender<ProtocolMessage>) {
+    async fn handle_client_request(
+        &mut self,
+        client_name: String,
+        client_request: ProtocolMessage,
+    ) {
         self.log.lock().unwrap().append(
             client_request.mtype,
             client_request.txid.clone(),
             client_request.senderid.clone(),
             client_request.opid,
         );
-        if client_request.mtype == MessageType::ClientRequest {
-            self.propose_to_participants(&client_request);
 
-            let responses = self.collect_participant_responses();
+        if client_request.mtype == MessageType::ClientRequest {
+            self.propose_to_participants(&client_request).await;
+
+            let (tx, rx) = tokio::sync::mpsc::channel(self.participants.lock().unwrap().len());
+            for (participant_name, (_, participant_rx)) in self.participants.lock().unwrap().iter() {
+                let tx_clone = tx.clone();
+                Self::spawn_blocking_listener(
+                    participant_name.clone(),
+                    participant_rx.clone(),
+                    tx_clone,
+                );
+            }
+            let responses = self.collect_participant_responses(rx).await;
 
             let cont = self.prepare_final_decision(responses);
-            let coordinator_participant_response =
-                self.prepare_participant_response(&client_request, cont);
-            let coordinator_client_response = self.prepare_client_response(&client_request, cont);
-
-            self.distribute_participant_responses(coordinator_participant_response);
-            self.send_client_response(coordinator_client_response, client_tx);
+            let client_response = self.prepare_client_response(&client_request, cont);
+            self.log.lock().unwrap().append(
+                client_response.mtype,
+                client_response.txid.clone(),
+                client_response.senderid.clone(),
+                client_response.opid,
+            );
+            let client_tx = self.clients.lock().unwrap().get(&client_name).unwrap().0.clone();
+            client_tx.send(client_response).unwrap();
         }
     }
 
-    pub fn protocol(&mut self) {
-        println!("Starting coordinator protocol");
-        for (client_tx, client_rx) in self.clients.values().cycle() {
-            if let Ok(client_request) = client_rx.try_recv() {
-                self.handle_client_request(client_request, &client_tx);
-            } else {
-                if !self.running.load(Ordering::SeqCst) {
-                    trace!("{SID}::Exiting");
-                    break;
-                }
-            }
+    pub async fn protocol(&mut self) {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+
+        for (client_name, (_, client_rx)) in self.clients.lock().unwrap().iter() {
+            let tx_clone = tx.clone();
+            Self::spawn_blocking_listener(client_name.clone(), client_rx.clone(), tx_clone);
         }
 
-        self.report_status();
+        while let Some((client_name, client_request)) = rx.recv().await {
+            let mut coordinator = self.clone();
+            tokio::spawn(async move {
+                coordinator.handle_client_request(client_name, client_request).await;
+            });
+        }
     }
 }
