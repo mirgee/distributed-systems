@@ -155,10 +155,10 @@ impl Coordinator {
         name: String,
         rx: Arc<Mutex<Receiver<ProtocolMessage>>>,
         sender: tokio::sync::mpsc::Sender<(String, ProtocolMessage)>,
-        running: Arc<AtomicBool>,
+        running_process: Arc<AtomicBool>,
     ) {
         std::thread::spawn(move || {
-            while running.load(Ordering::SeqCst) {
+            while running_process.load(Ordering::SeqCst) {
                 match rx
                     .blocking_lock()
                     .try_recv_timeout(Duration::from_millis(10000))
@@ -172,6 +172,28 @@ impl Coordinator {
                         error!("{SID}::Error receiving message from {name}: {err}");
                         break;
                     }
+                }
+            }
+        });
+    }
+
+    fn spawn_oneshot_listener(
+        name: String,
+        rx: Arc<Mutex<Receiver<ProtocolMessage>>>,
+        sender: tokio::sync::mpsc::Sender<(String, ProtocolMessage)>,
+    ) {
+        std::thread::spawn(move || {
+            match rx
+                .blocking_lock()
+                .try_recv_timeout(Duration::from_millis(10000))
+            {
+                Ok(received_message) => {
+                    if let Err(err) = sender.blocking_send((name.clone(), received_message)) {
+                        error!("{SID}::Error sending received message from {name}: {err}");
+                    }
+                }
+                Err(err) => {
+                    error!("{SID}::Error receiving message from {name}: {err}");
                 }
             }
         });
@@ -209,10 +231,43 @@ impl Coordinator {
         }
     }
 
+    async fn prepare_participant_response(
+        &self,
+        participant_message: &ProtocolMessage,
+        cont: bool,
+    ) -> ProtocolMessage {
+        if cont {
+            ProtocolMessage::generate(
+                MessageType::CoordinatorCommit,
+                participant_message.txid.clone(),
+                SID.to_string(),
+                participant_message.opid,
+            )
+        } else {
+            ProtocolMessage::generate(
+                MessageType::CoordinatorAbort,
+                participant_message.txid.clone(),
+                SID.to_string(),
+                participant_message.opid,
+            )
+        }
+    }
     fn prepare_final_decision(&self, responses: Vec<ProtocolMessage>) -> bool {
         responses
             .iter()
             .all(|r| r.mtype == MessageType::ParticipantVoteCommit)
+    }
+
+    async fn send_message_to_participants(&self, message: ProtocolMessage) {
+        let mut tasks = tokio::task::JoinSet::new();
+        for (participant_tx, _) in self.participants.lock().await.values() {
+            let participant_tx = participant_tx.clone();
+            let message = message.clone();
+            tasks.spawn(async move {
+                participant_tx.send(message).unwrap();
+            });
+        }
+        tasks.join_all().await;
     }
 
     async fn handle_client_request(
@@ -237,16 +292,19 @@ impl Coordinator {
             let (ptx, prx) = tokio::sync::mpsc::channel(self.participants.lock().await.len());
             for (participant_name, (_, participant_rx)) in self.participants.lock().await.iter() {
                 let ptx_clone = ptx.clone();
-                Self::spawn_blocking_listener(
+                Self::spawn_oneshot_listener(
                     participant_name.clone(),
                     participant_rx.clone(),
                     ptx_clone,
-                    self.running.clone(),
                 );
             }
             let responses = self.collect_participant_responses(prx).await;
 
             let cont = self.prepare_final_decision(responses);
+            
+            let participant_response = self.prepare_participant_response(&client_request, cont).await;
+            self.send_message_to_participants(participant_response).await;
+
             let client_response = self.prepare_client_response(&client_request, cont).await;
             self.log.lock().await.append(
                 client_response.mtype,
@@ -262,6 +320,7 @@ impl Coordinator {
                 .unwrap()
                 .0
                 .clone();
+            trace!("{SID}::Sending message {client_response:?}");
             client_tx.send(client_response).unwrap();
         }
     }

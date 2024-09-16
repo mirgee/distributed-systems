@@ -130,7 +130,6 @@ impl Participant {
             assert_eq!(transaction.state, TransactionState::AwaitingGlobalDecision);
             self.stats.unknown -= 1;
             self.stats.committed += 1;
-            // Optionally, perform any commit actions here (e.g., apply changes)
             self.transactions.remove(&txid);
         } else {
             trace!("{}::Received commit for unknown transaction {}", self.id_str, txid);
@@ -143,7 +142,6 @@ impl Participant {
             assert_eq!(transaction.state, TransactionState::AwaitingGlobalDecision);
             self.stats.unknown -= 1;
             self.stats.aborted += 1;
-            // Optionally, perform any abort actions here (e.g., rollback changes)
             self.transactions.remove(&txid);
         } else {
             trace!("{}::Received abort for unknown transaction {}", self.id_str, txid);
@@ -151,6 +149,7 @@ impl Participant {
     }
 
     fn perform_operation(&mut self, message: &ProtocolMessage) {
+        trace!("{}::Received message {message:?}", self.id_str);
         match message.mtype {
             MessageType::CoordinatorPropose => self.handle_propose(message),
             MessageType::CoordinatorAbort => self.handle_abort(message),
