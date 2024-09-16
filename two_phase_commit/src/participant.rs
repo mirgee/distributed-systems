@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::sleep;
@@ -15,7 +16,7 @@ use crate::oplog;
 use crate::Stats;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ParticipantState {
+pub enum TransactionState {
     Quiescent,
     ReceivedP1,
     VotedAbort,
@@ -24,9 +25,14 @@ pub enum ParticipantState {
 }
 
 #[derive(Debug)]
+struct Transaction {
+    state: TransactionState,
+}
+
+#[derive(Debug)]
 pub struct Participant {
     id_str: String,
-    state: ParticipantState,
+    transactions: HashMap<String, Transaction>,
     log: oplog::OpLog,
     running: Arc<AtomicBool>,
     send_success_prob: f64,
@@ -48,7 +54,7 @@ impl Participant {
     ) -> Participant {
         Participant {
             id_str,
-            state: ParticipantState::Quiescent,
+            transactions: HashMap::new(),
             log: oplog::OpLog::new(log_path),
             running: r,
             send_success_prob,
@@ -61,24 +67,14 @@ impl Participant {
 
     fn send(&mut self, pm: ProtocolMessage) {
         if random::<f64>() <= self.send_success_prob {
-            trace!("{}::Sent message", self.id_str.clone());
+            trace!("{}::Sent message {:?}", self.id_str.clone(), pm);
             self.log
                 .append(pm.mtype, pm.txid.clone(), pm.senderid.clone(), pm.opid);
             self.tx.send(pm).unwrap();
         } else {
             trace!("{}::Failed to send message", self.id_str.clone());
-            self.transition_to(ParticipantState::Quiescent)
+            // Optionally handle send failure, e.g., retry or log
         }
-    }
-
-    fn transition_to(&mut self, state: ParticipantState) {
-        trace!(
-            "{}::Moving state from {:?} to {:?}",
-            self.id_str.clone(),
-            self.state,
-            state
-        );
-        self.state = state;
     }
 
     fn receive(&mut self) -> Result<ProtocolMessage, TryRecvError> {
@@ -96,61 +92,71 @@ impl Participant {
         }
     }
 
-    fn handle_propose(&mut self, request: &ProtocolMessage) {
-        assert_eq!(self.state, ParticipantState::Quiescent);
+    fn handle_propose(&mut self, message: &ProtocolMessage) {
+        let txid = message.txid.clone();
+        let transaction = self.transactions.entry(txid.clone()).or_insert(Transaction {
+            state: TransactionState::Quiescent,
+        });
+
+        assert_eq!(transaction.state, TransactionState::Quiescent);
         self.stats.unknown += 1;
-        self.transition_to(ParticipantState::ReceivedP1);
+        transaction.state = TransactionState::ReceivedP1;
+
         let response = if random::<f64>() <= self.operation_success_prob {
-            self.transition_to(ParticipantState::VotedCommit);
+            transaction.state = TransactionState::VotedCommit;
             ProtocolMessage::generate(
                 MessageType::ParticipantVoteCommit,
-                request.txid.clone(),
+                txid,
                 self.id_str.clone(),
-                request.opid,
+                message.opid,
             )
         } else {
-            self.transition_to(ParticipantState::VotedAbort);
+            transaction.state = TransactionState::VotedAbort;
             ProtocolMessage::generate(
                 MessageType::ParticipantVoteAbort,
-                request.txid.clone(),
+                txid,
                 self.id_str.clone(),
-                request.opid,
+                message.opid,
             )
         };
 
+        transaction.state = TransactionState::AwaitingGlobalDecision;
         self.send(response);
-        self.transition_to(ParticipantState::AwaitingGlobalDecision);
-    }
-
-    fn handle_abort(&mut self, message: &ProtocolMessage) {
-        assert_eq!(self.state, ParticipantState::AwaitingGlobalDecision);
-        assert_eq!(message.mtype, MessageType::CoordinatorAbort);
-        self.stats.unknown -= 1;
-        self.stats.aborted += 1;
-        self.state = ParticipantState::Quiescent;
     }
 
     fn handle_commit(&mut self, message: &ProtocolMessage) {
-        assert_eq!(self.state, ParticipantState::AwaitingGlobalDecision);
-        assert_eq!(message.mtype, MessageType::CoordinatorCommit);
-        self.stats.unknown -= 1;
-        self.stats.committed += 1;
-        self.state = ParticipantState::Quiescent;
+        let txid = message.txid.clone();
+        if let Some(transaction) = self.transactions.get_mut(&txid) {
+            assert_eq!(transaction.state, TransactionState::AwaitingGlobalDecision);
+            self.stats.unknown -= 1;
+            self.stats.committed += 1;
+            // Optionally, perform any commit actions here (e.g., apply changes)
+            self.transactions.remove(&txid);
+        } else {
+            trace!("{}::Received commit for unknown transaction {}", self.id_str, txid);
+        }
     }
 
-    fn perform_operation(&mut self, request: &ProtocolMessage) {
-        // TODO: We should write the transaction to a WAL after receiving propose
-        trace!(
-            "{}::Performing operation on message {:?}",
-            self.id_str.clone(),
-            request
-        );
-        match request.mtype {
-            MessageType::CoordinatorPropose => self.handle_propose(request),
-            MessageType::CoordinatorAbort => self.handle_abort(request),
-            MessageType::CoordinatorCommit => self.handle_commit(request),
+    fn handle_abort(&mut self, message: &ProtocolMessage) {
+        let txid = message.txid.clone();
+        if let Some(transaction) = self.transactions.get_mut(&txid) {
+            assert_eq!(transaction.state, TransactionState::AwaitingGlobalDecision);
+            self.stats.unknown -= 1;
+            self.stats.aborted += 1;
+            // Optionally, perform any abort actions here (e.g., rollback changes)
+            self.transactions.remove(&txid);
+        } else {
+            trace!("{}::Received abort for unknown transaction {}", self.id_str, txid);
+        }
+    }
+
+    fn perform_operation(&mut self, message: &ProtocolMessage) {
+        match message.mtype {
+            MessageType::CoordinatorPropose => self.handle_propose(message),
+            MessageType::CoordinatorAbort => self.handle_abort(message),
+            MessageType::CoordinatorCommit => self.handle_commit(message),
             MessageType::CoordinatorExit => self.running.store(false, Ordering::SeqCst),
-            _ => panic!(),
+            _ => panic!("{}::Unexpected message type {:?}", self.id_str, message.mtype),
         }
     }
 

@@ -72,7 +72,7 @@ impl Client {
     }
 
     pub fn recv_result(&mut self) {
-        info!("{}::Receiving Coordinator Result", self.id_str.clone());
+        info!("{}::Receiving Coordinator result", self.id_str.clone());
 
         match self.rx.recv().unwrap().mtype {
             MessageType::ClientResultCommit => {

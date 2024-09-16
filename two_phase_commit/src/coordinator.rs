@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::time::Duration;
+use tokio::sync::Mutex;
 
 use ipc_channel::ipc::IpcReceiver as Receiver;
 use ipc_channel::ipc::IpcSender as Sender;
@@ -30,8 +32,30 @@ pub struct Coordinator {
     running: Arc<AtomicBool>,
     log: Arc<Mutex<oplog::OpLog>>,
     stats: Arc<Mutex<Stats>>,
-    participants: Arc<Mutex<HashMap<String, (Sender<ProtocolMessage>, Arc<Mutex<Receiver<ProtocolMessage>>>)>>>,
-    clients: Arc<Mutex<HashMap<String, (Sender<ProtocolMessage>, Arc<Mutex<Receiver<ProtocolMessage>>>)>>>,
+    // TODO: Makre RwLock
+    participants: Arc<
+        Mutex<
+            HashMap<
+                String,
+                (
+                    Sender<ProtocolMessage>,
+                    Arc<Mutex<Receiver<ProtocolMessage>>>,
+                ),
+            >,
+        >,
+    >,
+    // TODO: Makre RwLock
+    clients: Arc<
+        Mutex<
+            HashMap<
+                String,
+                (
+                    Sender<ProtocolMessage>,
+                    Arc<Mutex<Receiver<ProtocolMessage>>>,
+                ),
+            >,
+        >,
+    >,
 }
 
 impl Coordinator {
@@ -46,30 +70,38 @@ impl Coordinator {
         }
     }
 
-    pub fn participant_join(
+    pub async fn participant_join(
         &mut self,
         name: &String,
         tx: Sender<ProtocolMessage>,
         rx: Receiver<ProtocolMessage>,
     ) {
         assert!(self.state == CoordinatorState::Quiescent);
-        self.participants.lock().unwrap().insert(name.clone(), (tx, Arc::new(Mutex::new(rx))));
+        self.participants
+            .lock()
+            .await
+            .insert(name.clone(), (tx, Arc::new(Mutex::new(rx))));
     }
 
-    pub fn client_join(
+    pub async fn client_join(
         &mut self,
         name: &String,
         tx: Sender<ProtocolMessage>,
         rx: Receiver<ProtocolMessage>,
     ) {
         assert!(self.state == CoordinatorState::Quiescent);
-        self.clients.lock().unwrap().insert(name.clone(), (tx, Arc::new(Mutex::new(rx))));
+        self.clients
+            .lock()
+            .await
+            .insert(name.clone(), (tx, Arc::new(Mutex::new(rx))));
     }
 
-    fn report_status(&mut self) {
+    async fn report_status(&mut self) {
         println!(
             "Coordinator    :\tCommitted: {:6}\tAborted: {:6}\tUnknown: {:6}",
-            self.stats.lock().unwrap().committed, self.stats.lock().unwrap().aborted, self.stats.lock().unwrap().unknown,
+            self.stats.lock().await.committed,
+            self.stats.lock().await.aborted,
+            self.stats.lock().await.unknown,
         );
     }
 
@@ -79,7 +111,7 @@ impl Coordinator {
     ) -> Vec<ProtocolMessage> {
         let mut responses = Vec::new();
         while let Some((participant_name, response)) = rx.recv().await {
-            self.log.lock().unwrap().append(
+            self.log.lock().await.append(
                 response.mtype,
                 response.txid.clone(),
                 response.senderid.clone(),
@@ -87,7 +119,7 @@ impl Coordinator {
             );
             responses.push(response);
 
-            if responses.len() == self.participants.lock().unwrap().len() {
+            if responses.len() == self.participants.lock().await.len() {
                 break;
             }
         }
@@ -105,11 +137,11 @@ impl Coordinator {
         );
         self.log
             .lock()
-            .unwrap()
+            .await
             .append(pm.mtype, pm.txid.clone(), pm.senderid.clone(), pm.opid);
 
         let mut tasks = tokio::task::JoinSet::new();
-        for (participant_tx, _) in self.participants.lock().unwrap().values() {
+        for (participant_tx, _) in self.participants.lock().await.values() {
             let participant_tx = participant_tx.clone();
             let pm_clone = pm.clone();
             tasks.spawn(async move {
@@ -123,27 +155,39 @@ impl Coordinator {
         name: String,
         rx: Arc<Mutex<Receiver<ProtocolMessage>>>,
         sender: tokio::sync::mpsc::Sender<(String, ProtocolMessage)>,
+        running: Arc<AtomicBool>,
     ) {
-        std::thread::spawn(move || loop {
-            match rx.lock().unwrap().recv() {
-                Ok(received_message) => {
-                    sender
-                        .blocking_send((name.clone(), received_message))
-                        .unwrap();
-                }
-                Err(_) => {
-                    break;
+        std::thread::spawn(move || {
+            while running.load(Ordering::SeqCst) {
+                match rx
+                    .blocking_lock()
+                    .try_recv_timeout(Duration::from_millis(10000))
+                {
+                    Ok(received_message) => {
+                        if let Err(err) = sender.blocking_send((name.clone(), received_message)) {
+                            error!("{SID}::Error sending received message from {name}: {err}");
+                        }
+                    }
+                    Err(err) => {
+                        error!("{SID}::Error receiving message from {name}: {err}");
+                        break;
+                    }
                 }
             }
         });
     }
 
-    fn prepare_client_response(
+    async fn prepare_client_response(
         &self,
         client_request: &ProtocolMessage,
         cont: bool,
     ) -> ProtocolMessage {
         if cont {
+            {
+                let mut lock = self.stats.lock().await;
+                lock.unknown -= 1;
+                lock.committed += 1;
+            }
             ProtocolMessage::generate(
                 MessageType::ClientResultCommit,
                 client_request.txid.clone(),
@@ -151,6 +195,11 @@ impl Coordinator {
                 client_request.opid,
             )
         } else {
+            {
+                let mut lock = self.stats.lock().await;
+                lock.unknown -= 1;
+                lock.aborted += 1;
+            }
             ProtocolMessage::generate(
                 MessageType::ClientResultAbort,
                 client_request.txid.clone(),
@@ -171,7 +220,11 @@ impl Coordinator {
         client_name: String,
         client_request: ProtocolMessage,
     ) {
-        self.log.lock().unwrap().append(
+        {
+            let mut lock = self.stats.lock().await;
+            lock.unknown += 1;
+        }
+        self.log.lock().await.append(
             client_request.mtype,
             client_request.txid.clone(),
             client_request.senderid.clone(),
@@ -181,43 +234,69 @@ impl Coordinator {
         if client_request.mtype == MessageType::ClientRequest {
             self.propose_to_participants(&client_request).await;
 
-            let (tx, rx) = tokio::sync::mpsc::channel(self.participants.lock().unwrap().len());
-            for (participant_name, (_, participant_rx)) in self.participants.lock().unwrap().iter() {
-                let tx_clone = tx.clone();
+            let (ptx, prx) = tokio::sync::mpsc::channel(self.participants.lock().await.len());
+            for (participant_name, (_, participant_rx)) in self.participants.lock().await.iter() {
+                let ptx_clone = ptx.clone();
                 Self::spawn_blocking_listener(
                     participant_name.clone(),
                     participant_rx.clone(),
-                    tx_clone,
+                    ptx_clone,
+                    self.running.clone(),
                 );
             }
-            let responses = self.collect_participant_responses(rx).await;
+            let responses = self.collect_participant_responses(prx).await;
 
             let cont = self.prepare_final_decision(responses);
-            let client_response = self.prepare_client_response(&client_request, cont);
-            self.log.lock().unwrap().append(
+            let client_response = self.prepare_client_response(&client_request, cont).await;
+            self.log.lock().await.append(
                 client_response.mtype,
                 client_response.txid.clone(),
                 client_response.senderid.clone(),
                 client_response.opid,
             );
-            let client_tx = self.clients.lock().unwrap().get(&client_name).unwrap().0.clone();
+            let client_tx = self
+                .clients
+                .lock()
+                .await
+                .get(&client_name)
+                .unwrap()
+                .0
+                .clone();
             client_tx.send(client_response).unwrap();
         }
     }
 
     pub async fn protocol(&mut self) {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
-
-        for (client_name, (_, client_rx)) in self.clients.lock().unwrap().iter() {
-            let tx_clone = tx.clone();
-            Self::spawn_blocking_listener(client_name.clone(), client_rx.clone(), tx_clone);
+        let (ctx, mut crx) = tokio::sync::mpsc::channel(32);
+        for (client_name, (_, client_rx)) in self.clients.lock().await.iter() {
+            let ctx_clone = ctx.clone();
+            Self::spawn_blocking_listener(
+                client_name.clone(),
+                client_rx.clone(),
+                ctx_clone,
+                self.running.clone(),
+            );
         }
 
-        while let Some((client_name, client_request)) = rx.recv().await {
-            let mut coordinator = self.clone();
-            tokio::spawn(async move {
-                coordinator.handle_client_request(client_name, client_request).await;
-            });
+        while self.running.load(Ordering::SeqCst) {
+            tokio::select! {
+                    Some((client_name, client_request)) = crx.recv() => {
+                        let mut coordinator = self.clone();
+                        tokio::spawn(async move {
+                            coordinator.handle_client_request(client_name, client_request).await;
+                        });
+                    },
+                _ = async {
+                    while self.running.load(Ordering::SeqCst) {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                } => {
+                    trace!("{SID} exiting gracefully");
+                    break;
+                }
+            }
         }
+
+        self.report_status().await;
     }
 }

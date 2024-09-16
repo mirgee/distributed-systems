@@ -68,7 +68,7 @@ fn connect_to_coordinator(
     (sender_client_server, receiver_client_server)
 }
 
-fn run(opts: &tpcoptions::TPCOptions, running: Arc<AtomicBool>) {
+async fn run(opts: &tpcoptions::TPCOptions, running: Arc<AtomicBool>) {
     let coord_log_path = format!("{}//{}", opts.log_path, "coordinator.log");
     let mut coordinator = Coordinator::new(coord_log_path, &running);
     let mut children = vec![];
@@ -80,7 +80,7 @@ fn run(opts: &tpcoptions::TPCOptions, running: Arc<AtomicBool>) {
             &format!("client_{client_num}"),
             sender_server_client,
             receiver_server_client,
-        );
+        ).await;
         children.push(child);
     }
 
@@ -91,11 +91,11 @@ fn run(opts: &tpcoptions::TPCOptions, running: Arc<AtomicBool>) {
             &format!("participant_{participant_num}"),
             sender_server_client,
             receiver_server_client,
-        );
+        ).await;
         children.push(child);
     }
 
-    coordinator.protocol();
+    coordinator.protocol().await;
 
     for child in children.iter_mut() {
         child.wait().unwrap();
@@ -131,7 +131,8 @@ fn run_participant(opts: &tpcoptions::TPCOptions, running: Arc<AtomicBool>) {
     participant.protocol();
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let opts = tpcoptions::TPCOptions::new();
 
     stderrlog::new()
@@ -161,7 +162,7 @@ fn main() {
     .expect("Error setting signal handler!");
 
     match opts.mode.as_ref() {
-        "run" => run(&opts, running),
+        "run" => run(&opts, running).await,
         "client" => run_client(&opts, running),
         "participant" => run_participant(&opts, running),
         "check" => checker::check_last_run(
