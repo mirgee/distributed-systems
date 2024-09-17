@@ -97,11 +97,12 @@ impl Coordinator {
     }
 
     async fn report_status(&mut self) {
+        let stats = self.stats.lock().await;
         println!(
             "Coordinator    :\tCommitted: {:6}\tAborted: {:6}\tUnknown: {:6}",
-            self.stats.lock().await.committed,
-            self.stats.lock().await.aborted,
-            self.stats.lock().await.unknown,
+            stats.committed,
+            stats.aborted,
+            stats.unknown,
         );
     }
 
@@ -301,9 +302,12 @@ impl Coordinator {
             let responses = self.collect_participant_responses(prx).await;
 
             let cont = self.prepare_final_decision(responses);
-            
-            let participant_response = self.prepare_participant_response(&client_request, cont).await;
-            self.send_message_to_participants(participant_response).await;
+
+            let participant_response = self
+                .prepare_participant_response(&client_request, cont)
+                .await;
+            self.send_message_to_participants(participant_response)
+                .await;
 
             let client_response = self.prepare_client_response(&client_request, cont).await;
             self.log.lock().await.append(
@@ -356,6 +360,15 @@ impl Coordinator {
             }
         }
 
+        for (client_name, (client_tx, client_rx)) in self.clients.lock().await.iter() {
+            let msg = ProtocolMessage::generate(
+                MessageType::CoordinatorExit,
+                "0".to_string(),
+                SID.to_string(),
+                0,
+            );
+            client_tx.send(msg).unwrap();
+        }
         self.report_status().await;
     }
 }

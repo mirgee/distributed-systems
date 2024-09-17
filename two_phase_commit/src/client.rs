@@ -1,4 +1,7 @@
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -71,25 +74,6 @@ impl Client {
         );
     }
 
-    pub fn recv_result(&mut self) {
-        info!("{}::Receiving Coordinator result", self.id_str.clone());
-
-        match self.rx.recv().unwrap().mtype {
-            MessageType::ClientResultCommit => {
-                self.stats.committed += 1;
-            }
-            MessageType::ClientResultAbort => {
-                self.stats.aborted += 1;
-            }
-            MessageType::CoordinatorExit => {
-                self.running.store(false, Ordering::SeqCst);
-            }
-            _ => {
-                self.stats.unknown += 1;
-            }
-        }
-    }
-
     pub fn report_status(&mut self) {
         println!(
             "{:16}:\tCommitted: {:6}\tAborted: {:6}\tUnknown: {:6}",
@@ -103,7 +87,24 @@ impl Client {
     pub fn protocol(&mut self, n_requests: u32) {
         for _ in 0..n_requests {
             self.send_next_operation();
-            self.recv_result();
+            info!("{}::Receiving Coordinator result", self.id_str.clone());
+
+            match self.rx.recv().unwrap().mtype {
+                MessageType::ClientResultCommit => {
+                    self.stats.committed += 1;
+                }
+                MessageType::ClientResultAbort => {
+                    self.stats.aborted += 1;
+                }
+                MessageType::CoordinatorExit => {
+                    info!("{}::Received coordinator exit, returning", self.id_str);
+                    self.running.store(false, Ordering::SeqCst);
+                    break;
+                }
+                _ => {
+                    self.stats.unknown += 1;
+                }
+            }
         }
         self.wait_for_exit_signal();
         self.report_status();
