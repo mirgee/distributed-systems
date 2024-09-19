@@ -40,13 +40,13 @@ impl Client {
     }
 
     pub fn wait_for_exit_signal(&mut self) {
-        trace!("{}::Waiting for exit signal", self.id_str.clone());
+        info!("{}::Waiting for exit signal", self.id_str.clone());
 
         while self.running.load(Ordering::SeqCst) {
             sleep(Duration::from_secs(1));
         }
 
-        trace!("{}::Exiting", self.id_str.clone());
+        info!("{}::Exiting", self.id_str.clone());
     }
 
     pub fn send_next_operation(&mut self) {
@@ -85,6 +85,7 @@ impl Client {
     }
 
     pub fn protocol(&mut self, n_requests: u32) {
+        info!("{}::Beginning protocol", self.id_str.clone());
         for _ in 0..n_requests {
             self.send_next_operation();
             info!("{}::Receiving Coordinator result", self.id_str.clone());
@@ -98,7 +99,6 @@ impl Client {
                 }
                 MessageType::CoordinatorExit => {
                     info!("{}::Received coordinator exit, returning", self.id_str);
-                    self.running.store(false, Ordering::SeqCst);
                     break;
                 }
                 _ => {

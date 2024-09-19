@@ -170,17 +170,17 @@ impl Participant {
     }
 
     fn wait_for_exit_signal(&mut self) {
-        trace!("{}::Waiting for exit signal", self.id_str.clone());
+        info!("{}::Waiting for exit signal", self.id_str.clone());
 
         while self.running.load(Ordering::SeqCst) {
             sleep(Duration::from_secs(1));
         }
 
-        trace!("{}::Exiting", self.id_str.clone());
+        info!("{}::Exiting", self.id_str.clone());
     }
 
     pub fn protocol(&mut self) {
-        trace!("{}::Beginning protocol", self.id_str.clone());
+        info!("{}::Beginning protocol", self.id_str.clone());
 
         while self.running.load(Ordering::SeqCst) {
             match self.receive() {

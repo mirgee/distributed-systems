@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Mutex;
 
 use ipc_channel::ipc::IpcReceiver as Receiver;
@@ -32,7 +31,6 @@ pub struct Coordinator {
     running: Arc<AtomicBool>,
     log: Arc<Mutex<oplog::OpLog>>,
     stats: Arc<Mutex<Stats>>,
-    // TODO: Makre RwLock
     participants: Arc<
         Mutex<
             HashMap<
@@ -44,7 +42,6 @@ pub struct Coordinator {
             >,
         >,
     >,
-    // TODO: Makre RwLock
     clients: Arc<
         Mutex<
             HashMap<
@@ -100,9 +97,7 @@ impl Coordinator {
         let stats = self.stats.lock().await;
         println!(
             "Coordinator    :\tCommitted: {:6}\tAborted: {:6}\tUnknown: {:6}",
-            stats.committed,
-            stats.aborted,
-            stats.unknown,
+            stats.committed, stats.aborted, stats.unknown,
         );
     }
 
@@ -111,7 +106,7 @@ impl Coordinator {
         mut rx: tokio::sync::mpsc::Receiver<(String, ProtocolMessage)>,
     ) -> Vec<ProtocolMessage> {
         let mut responses = Vec::new();
-        while let Some((participant_name, response)) = rx.recv().await {
+        while let Some((_, response)) = rx.recv().await {
             self.log.lock().await.append(
                 response.mtype,
                 response.txid.clone(),
@@ -146,7 +141,7 @@ impl Coordinator {
             let participant_tx = participant_tx.clone();
             let pm_clone = pm.clone();
             tasks.spawn(async move {
-                participant_tx.send(pm_clone).unwrap();
+                participant_tx.send(pm_clone).ok();
             });
         }
         tasks.join_all().await;
@@ -162,19 +157,21 @@ impl Coordinator {
             while running_process.load(Ordering::SeqCst) {
                 match rx
                     .blocking_lock()
-                    .try_recv_timeout(Duration::from_millis(10000))
+                    .recv()
                 {
                     Ok(received_message) => {
                         if let Err(err) = sender.blocking_send((name.clone(), received_message)) {
-                            error!("{SID}::Error sending received message from {name}: {err}");
+                            trace!("{SID}::Error sending received message from {name}: {err}");
                         }
                     }
+                    Err(err) if matches!(err, ipc_channel::ipc::IpcError::Disconnected) => {},
                     Err(err) => {
-                        error!("{SID}::Error receiving message from {name}: {err}");
+                        trace!("{SID}::Error in blocking listener receiving message from {name}: {err}");
                         break;
                     }
                 }
             }
+            trace!("Blocking listener for {name} exiting");
         });
     }
 
@@ -186,17 +183,18 @@ impl Coordinator {
         std::thread::spawn(move || {
             match rx
                 .blocking_lock()
-                .try_recv_timeout(Duration::from_millis(10000))
+                .recv()
             {
                 Ok(received_message) => {
                     if let Err(err) = sender.blocking_send((name.clone(), received_message)) {
-                        error!("{SID}::Error sending received message from {name}: {err}");
+                        trace!("{SID}::Error sending received message from {name}: {err}");
                     }
                 }
                 Err(err) => {
-                    error!("{SID}::Error receiving message from {name}: {err}");
+                    trace!("{SID}::Error in oneshot listener receiving message from {name}: {err}");
                 }
             }
+            trace!("Oneshot listener for {name} exiting");
         });
     }
 
@@ -232,7 +230,7 @@ impl Coordinator {
         }
     }
 
-    async fn prepare_participant_response(
+    fn prepare_participant_response(
         &self,
         participant_message: &ProtocolMessage,
         cont: bool,
@@ -253,22 +251,42 @@ impl Coordinator {
             )
         }
     }
+
     fn prepare_final_decision(&self, responses: Vec<ProtocolMessage>) -> bool {
         responses
             .iter()
             .all(|r| r.mtype == MessageType::ParticipantVoteCommit)
     }
 
-    async fn send_message_to_participants(&self, message: ProtocolMessage) {
+    async fn send_response_to_participants(&self, message: ProtocolMessage) {
         let mut tasks = tokio::task::JoinSet::new();
         for (participant_tx, _) in self.participants.lock().await.values() {
             let participant_tx = participant_tx.clone();
             let message = message.clone();
             tasks.spawn(async move {
-                participant_tx.send(message).unwrap();
+                participant_tx.send(message).ok();
             });
         }
         tasks.join_all().await;
+    }
+
+    async fn send_response_to_client(&self, message: ProtocolMessage, client_name: &str) {
+        self.log.lock().await.append(
+            message.mtype,
+            message.txid.clone(),
+            message.senderid.clone(),
+            message.opid,
+        );
+        let client_tx = self
+            .clients
+            .lock()
+            .await
+            .get(client_name)
+            .unwrap()
+            .0
+            .clone();
+        trace!("{SID}::Sending message {message:?}");
+        client_tx.send(message).ok();
     }
 
     async fn handle_client_request(
@@ -290,42 +308,35 @@ impl Coordinator {
         if client_request.mtype == MessageType::ClientRequest {
             self.propose_to_participants(&client_request).await;
 
-            let (ptx, prx) = tokio::sync::mpsc::channel(self.participants.lock().await.len());
-            for (participant_name, (_, participant_rx)) in self.participants.lock().await.iter() {
-                let ptx_clone = ptx.clone();
-                Self::spawn_oneshot_listener(
-                    participant_name.clone(),
-                    participant_rx.clone(),
-                    ptx_clone,
-                );
-            }
+            let prx = {
+                let participants = self.participants.lock().await;
+                let (ptx, prx) = tokio::sync::mpsc::channel(participants.len());
+                for (participant_name, (_, participant_rx)) in participants.iter() {
+                    let ptx_clone = ptx.clone();
+                    Self::spawn_oneshot_listener(
+                        participant_name.clone(),
+                        participant_rx.clone(),
+                        ptx_clone,
+                    );
+                }
+                prx
+            };
             let responses = self.collect_participant_responses(prx).await;
 
             let cont = self.prepare_final_decision(responses);
 
-            let participant_response = self
-                .prepare_participant_response(&client_request, cont)
-                .await;
-            self.send_message_to_participants(participant_response)
-                .await;
+            let participant_response = self.prepare_participant_response(&client_request, cont);
+            let coordinator = self.clone();
+            tokio::spawn(async move {
+                coordinator.send_response_to_participants(participant_response)
+                    .await;
+            });
 
             let client_response = self.prepare_client_response(&client_request, cont).await;
-            self.log.lock().await.append(
-                client_response.mtype,
-                client_response.txid.clone(),
-                client_response.senderid.clone(),
-                client_response.opid,
-            );
-            let client_tx = self
-                .clients
-                .lock()
-                .await
-                .get(&client_name)
-                .unwrap()
-                .0
-                .clone();
-            trace!("{SID}::Sending message {client_response:?}");
-            client_tx.send(client_response).unwrap();
+            let coordinator = self.clone();
+            tokio::spawn(async move {
+                coordinator.send_response_to_client(client_response, &client_name).await;
+            });
         }
     }
 
@@ -343,12 +354,12 @@ impl Coordinator {
 
         while self.running.load(Ordering::SeqCst) {
             tokio::select! {
-                    Some((client_name, client_request)) = crx.recv() => {
-                        let mut coordinator = self.clone();
-                        tokio::spawn(async move {
-                            coordinator.handle_client_request(client_name, client_request).await;
-                        });
-                    },
+                Some((client_name, client_request)) = crx.recv() => {
+                    let mut coordinator = self.clone();
+                    tokio::spawn(async move {
+                        coordinator.handle_client_request(client_name, client_request).await;
+                    });
+                },
                 _ = async {
                     while self.running.load(Ordering::SeqCst) {
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -360,7 +371,7 @@ impl Coordinator {
             }
         }
 
-        for (client_name, (client_tx, client_rx)) in self.clients.lock().await.iter() {
+        for (_, (client_tx, _)) in self.clients.lock().await.iter() {
             let msg = ProtocolMessage::generate(
                 MessageType::CoordinatorExit,
                 "0".to_string(),
