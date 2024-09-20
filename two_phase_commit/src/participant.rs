@@ -32,6 +32,7 @@ struct Transaction {
 #[derive(Debug)]
 pub struct Participant {
     id_str: String,
+    // TODO: Manage transaction states protperly
     transactions: HashMap<String, Transaction>,
     log: oplog::OpLog,
     running: Arc<AtomicBool>,
@@ -172,6 +173,7 @@ impl Participant {
     fn wait_for_exit_signal(&mut self) {
         info!("{}::Waiting for exit signal", self.id_str.clone());
 
+        // TODO: Wait for CoordinatorExit?
         while self.running.load(Ordering::SeqCst) {
             sleep(Duration::from_secs(1));
         }
@@ -188,6 +190,7 @@ impl Participant {
                     self.perform_operation(&message);
                 }
                 Err(_) => {
+                    // TODO: Refactor to use async code
                     sleep(Duration::from_millis(100));
                 }
             }

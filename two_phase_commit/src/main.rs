@@ -1,3 +1,5 @@
+// TODO: Better error handling
+
 #[macro_use]
 extern crate log;
 
@@ -153,6 +155,7 @@ async fn main() {
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     let m = opts.mode.clone();
+    // TODO: Consider using tokio::signal::ctrl_c
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
         if m == "run" {

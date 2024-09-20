@@ -42,6 +42,7 @@ impl Client {
     pub fn wait_for_exit_signal(&mut self) {
         info!("{}::Waiting for exit signal", self.id_str.clone());
 
+        // TODO: Wait for CoordinatorExit message instead?
         while self.running.load(Ordering::SeqCst) {
             sleep(Duration::from_secs(1));
         }

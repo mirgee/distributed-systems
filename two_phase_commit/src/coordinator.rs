@@ -15,6 +15,7 @@ use crate::Stats;
 
 static SID: &str = "Coordinator";
 
+// TODO: Probably remove, doesn't make sense in the current paradigm
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CoordinatorState {
     Quiescent,
@@ -31,6 +32,7 @@ pub struct Coordinator {
     running: Arc<AtomicBool>,
     log: Arc<Mutex<oplog::OpLog>>,
     stats: Arc<Mutex<Stats>>,
+    // TODO: Try using DashMap
     participants: Arc<
         Mutex<
             HashMap<
@@ -42,6 +44,7 @@ pub struct Coordinator {
             >,
         >,
     >,
+    // TODO: Try using DashMap
     clients: Arc<
         Mutex<
             HashMap<
@@ -101,6 +104,7 @@ impl Coordinator {
         );
     }
 
+    // TODO: Use FuturesUnordered or similar?
     async fn collect_participant_responses(
         &self,
         mut rx: tokio::sync::mpsc::Receiver<(String, ProtocolMessage)>,
@@ -153,6 +157,7 @@ impl Coordinator {
         sender: tokio::sync::mpsc::Sender<(String, ProtocolMessage)>,
         running_process: Arc<AtomicBool>,
     ) {
+        // TODO: Try using tasks instead of threads?`
         std::thread::spawn(move || {
             while running_process.load(Ordering::SeqCst) {
                 match rx
@@ -180,6 +185,7 @@ impl Coordinator {
         rx: Arc<Mutex<Receiver<ProtocolMessage>>>,
         sender: tokio::sync::mpsc::Sender<(String, ProtocolMessage)>,
     ) {
+        // TODO: Try using tasks instead of threads?`
         std::thread::spawn(move || {
             match rx
                 .blocking_lock()
