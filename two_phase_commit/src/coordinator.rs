@@ -15,15 +15,10 @@ use crate::Stats;
 
 static SID: &str = "Coordinator";
 
-// TODO: Probably remove, doesn't make sense in the current paradigm
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CoordinatorState {
     Quiescent,
-    ReceivedRequest,
-    ProposalSent,
-    ReceivedVotesAbort,
-    ReceivedVotesCommit,
-    SentGlobalDecision,
+    Running
 }
 
 #[derive(Debug, Clone)]
@@ -32,41 +27,23 @@ pub struct Coordinator {
     running: Arc<AtomicBool>,
     log: Arc<Mutex<oplog::OpLog>>,
     stats: Arc<Mutex<Stats>>,
-    // TODO: Try using DashMap
-    participants: Arc<
-        Mutex<
-            HashMap<
-                String,
-                (
-                    Sender<ProtocolMessage>,
-                    Arc<Mutex<Receiver<ProtocolMessage>>>,
-                ),
-            >,
-        >,
-    >,
-    // TODO: Try using DashMap
-    clients: Arc<
-        Mutex<
-            HashMap<
-                String,
-                (
-                    Sender<ProtocolMessage>,
-                    Arc<Mutex<Receiver<ProtocolMessage>>>,
-                ),
-            >,
-        >,
-    >,
+    participant_senders: Arc<Mutex<HashMap<String, Sender<ProtocolMessage>>>>,
+    participant_receivers: Arc<Mutex<HashMap<String, Arc<Mutex<Receiver<ProtocolMessage>>>>>>,
+    client_senders: Arc<Mutex<HashMap<String, Sender<ProtocolMessage>>>>,
+    client_receivers: Arc<Mutex<HashMap<String, Arc<Mutex<Receiver<ProtocolMessage>>>>>>,
 }
 
 impl Coordinator {
-    pub fn new(log_path: String, r: &Arc<AtomicBool>) -> Coordinator {
+    pub fn new(log_path: String, r: Arc<AtomicBool>) -> Coordinator {
         Coordinator {
             state: CoordinatorState::Quiescent,
             log: Arc::new(Mutex::new(oplog::OpLog::new(log_path))),
             running: r.clone(),
             stats: Default::default(),
-            participants: Default::default(),
-            clients: Default::default(),
+            participant_senders: Default::default(),
+            participant_receivers: Default::default(),
+            client_senders: Default::default(),
+            client_receivers: Default::default(),
         }
     }
 
@@ -77,10 +54,8 @@ impl Coordinator {
         rx: Receiver<ProtocolMessage>,
     ) {
         assert!(self.state == CoordinatorState::Quiescent);
-        self.participants
-            .lock()
-            .await
-            .insert(name.clone(), (tx, Arc::new(Mutex::new(rx))));
+        self.participant_senders.lock().await.insert(name.clone(), tx);
+        self.participant_receivers.lock().await.insert(name.clone(), Arc::new(Mutex::new(rx)));
     }
 
     pub async fn client_join(
@@ -90,10 +65,8 @@ impl Coordinator {
         rx: Receiver<ProtocolMessage>,
     ) {
         assert!(self.state == CoordinatorState::Quiescent);
-        self.clients
-            .lock()
-            .await
-            .insert(name.clone(), (tx, Arc::new(Mutex::new(rx))));
+        self.client_senders.lock().await.insert(name.clone(), tx);
+        self.client_receivers.lock().await.insert(name.clone(), Arc::new(Mutex::new(rx)));
     }
 
     async fn report_status(&mut self) {
@@ -104,12 +77,13 @@ impl Coordinator {
         );
     }
 
-    // TODO: Use FuturesUnordered or similar?
     async fn collect_participant_responses(
         &self,
         mut rx: tokio::sync::mpsc::Receiver<(String, ProtocolMessage)>,
+        num_participants: usize
     ) -> Vec<ProtocolMessage> {
         let mut responses = Vec::new();
+        // TODO: Handle timeouts
         while let Some((_, response)) = rx.recv().await {
             self.log.lock().await.append(
                 response.mtype,
@@ -119,7 +93,7 @@ impl Coordinator {
             );
             responses.push(response);
 
-            if responses.len() == self.participants.lock().await.len() {
+            if responses.len() == num_participants {
                 break;
             }
         }
@@ -141,7 +115,7 @@ impl Coordinator {
             .append(pm.mtype, pm.txid.clone(), pm.senderid.clone(), pm.opid);
 
         let mut tasks = tokio::task::JoinSet::new();
-        for (participant_tx, _) in self.participants.lock().await.values() {
+        for participant_tx in self.participant_senders.lock().await.values() {
             let participant_tx = participant_tx.clone();
             let pm_clone = pm.clone();
             tasks.spawn(async move {
@@ -266,7 +240,7 @@ impl Coordinator {
 
     async fn send_response_to_participants(&self, message: ProtocolMessage) {
         let mut tasks = tokio::task::JoinSet::new();
-        for (participant_tx, _) in self.participants.lock().await.values() {
+        for participant_tx in self.participant_senders.lock().await.values() {
             let participant_tx = participant_tx.clone();
             let message = message.clone();
             tasks.spawn(async move {
@@ -284,12 +258,11 @@ impl Coordinator {
             message.opid,
         );
         let client_tx = self
-            .clients
+            .client_senders
             .lock()
             .await
             .get(client_name)
             .unwrap()
-            .0
             .clone();
         trace!("{SID}::Sending message {message:?}");
         client_tx.send(message).ok();
@@ -314,10 +287,11 @@ impl Coordinator {
         if client_request.mtype == MessageType::ClientRequest {
             self.propose_to_participants(&client_request).await;
 
-            let prx = {
-                let participants = self.participants.lock().await;
-                let (ptx, prx) = tokio::sync::mpsc::channel(participants.len());
-                for (participant_name, (_, participant_rx)) in participants.iter() {
+            let (prx, num_participants) = {
+                let participant_receivers = self.participant_receivers.lock().await;
+                let l = participant_receivers.len();
+                let (ptx, prx) = tokio::sync::mpsc::channel(l);
+                for (participant_name, participant_rx) in participant_receivers.iter() {
                     let ptx_clone = ptx.clone();
                     Self::spawn_oneshot_listener(
                         participant_name.clone(),
@@ -325,9 +299,9 @@ impl Coordinator {
                         ptx_clone,
                     );
                 }
-                prx
+                (prx, l)
             };
-            let responses = self.collect_participant_responses(prx).await;
+            let responses = self.collect_participant_responses(prx, num_participants).await;
 
             let cont = self.prepare_final_decision(responses);
 
@@ -347,8 +321,10 @@ impl Coordinator {
     }
 
     pub async fn protocol(&mut self) {
+        self.state = CoordinatorState::Running;
+
         let (ctx, mut crx) = tokio::sync::mpsc::channel(32);
-        for (client_name, (_, client_rx)) in self.clients.lock().await.iter() {
+        for (client_name, client_rx) in self.client_receivers.lock().await.iter() {
             let ctx_clone = ctx.clone();
             Self::spawn_blocking_listener(
                 client_name.clone(),
@@ -361,6 +337,7 @@ impl Coordinator {
         while self.running.load(Ordering::SeqCst) {
             tokio::select! {
                 Some((client_name, client_request)) = crx.recv() => {
+                    // Consider cloning only what is necessary instead of entire self?
                     let mut coordinator = self.clone();
                     tokio::spawn(async move {
                         coordinator.handle_client_request(client_name, client_request).await;
@@ -377,7 +354,8 @@ impl Coordinator {
             }
         }
 
-        for (_, (client_tx, _)) in self.clients.lock().await.iter() {
+        // If there was no need to do this, we might rather use DashMap for client_senders
+        for client_tx in self.client_senders.lock().await.values() {
             let msg = ProtocolMessage::generate(
                 MessageType::CoordinatorExit,
                 "0".to_string(),

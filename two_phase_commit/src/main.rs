@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use message::ProtocolMessage;
 
+// TODO: Try using lock-free datastructure for this
 #[derive(Debug, Default)]
 pub struct Stats {
     pub committed: u64,
@@ -72,7 +73,7 @@ fn connect_to_coordinator(
 
 async fn run(opts: &tpcoptions::TPCOptions, running: Arc<AtomicBool>) {
     let coord_log_path = format!("{}//{}", opts.log_path, "coordinator.log");
-    let mut coordinator = Coordinator::new(coord_log_path, &running);
+    let mut coordinator = Coordinator::new(coord_log_path, running);
     let mut children = vec![];
 
     for client_num in 0..opts.num_clients {
