@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread::sleep;
 use std::time::Duration;
 
 use ipc_channel::ipc::TryRecvError;
@@ -175,7 +174,7 @@ impl Participant {
 
         // TODO: Wait for CoordinatorExit?
         while self.running.load(Ordering::SeqCst) {
-            sleep(Duration::from_secs(1));
+            std::thread::sleep(Duration::from_secs(1));
         }
 
         info!("{}::Exiting", self.id_str.clone());
@@ -191,7 +190,7 @@ impl Participant {
                 }
                 Err(_) => {
                     // TODO: Refactor to use async code
-                    sleep(Duration::from_millis(100));
+                    std::thread::sleep(Duration::from_millis(100));
                 }
             }
         }

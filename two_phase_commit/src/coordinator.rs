@@ -18,7 +18,7 @@ static SID: &str = "Coordinator";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CoordinatorState {
     Quiescent,
-    Running
+    Running,
 }
 
 #[derive(Debug, Clone)]
@@ -54,8 +54,14 @@ impl Coordinator {
         rx: Receiver<ProtocolMessage>,
     ) {
         assert!(self.state == CoordinatorState::Quiescent);
-        self.participant_senders.lock().await.insert(name.clone(), tx);
-        self.participant_receivers.lock().await.insert(name.clone(), Arc::new(Mutex::new(rx)));
+        self.participant_senders
+            .lock()
+            .await
+            .insert(name.clone(), tx);
+        self.participant_receivers
+            .lock()
+            .await
+            .insert(name.clone(), Arc::new(Mutex::new(rx)));
     }
 
     pub async fn client_join(
@@ -66,7 +72,10 @@ impl Coordinator {
     ) {
         assert!(self.state == CoordinatorState::Quiescent);
         self.client_senders.lock().await.insert(name.clone(), tx);
-        self.client_receivers.lock().await.insert(name.clone(), Arc::new(Mutex::new(rx)));
+        self.client_receivers
+            .lock()
+            .await
+            .insert(name.clone(), Arc::new(Mutex::new(rx)));
     }
 
     async fn report_status(&mut self) {
@@ -80,7 +89,7 @@ impl Coordinator {
     async fn collect_participant_responses(
         &self,
         mut rx: tokio::sync::mpsc::Receiver<(String, ProtocolMessage)>,
-        num_participants: usize
+        num_participants: usize,
     ) -> Vec<ProtocolMessage> {
         let mut responses = Vec::new();
         // TODO: Handle timeouts
@@ -131,19 +140,15 @@ impl Coordinator {
         sender: tokio::sync::mpsc::Sender<(String, ProtocolMessage)>,
         running_process: Arc<AtomicBool>,
     ) {
-        // TODO: Try using tasks instead of threads?`
-        std::thread::spawn(move || {
+        tokio::spawn(async move {
             while running_process.load(Ordering::SeqCst) {
-                match rx
-                    .blocking_lock()
-                    .recv()
-                {
+                match rx.lock().await.recv() {
                     Ok(received_message) => {
-                        if let Err(err) = sender.blocking_send((name.clone(), received_message)) {
+                        if let Err(err) = sender.send((name.clone(), received_message)).await {
                             trace!("{SID}::Error sending received message from {name}: {err}");
                         }
                     }
-                    Err(err) if matches!(err, ipc_channel::ipc::IpcError::Disconnected) => {},
+                    Err(err) if matches!(err, ipc_channel::ipc::IpcError::Disconnected) => {}
                     Err(err) => {
                         trace!("{SID}::Error in blocking listener receiving message from {name}: {err}");
                         break;
@@ -159,14 +164,10 @@ impl Coordinator {
         rx: Arc<Mutex<Receiver<ProtocolMessage>>>,
         sender: tokio::sync::mpsc::Sender<(String, ProtocolMessage)>,
     ) {
-        // TODO: Try using tasks instead of threads?`
-        std::thread::spawn(move || {
-            match rx
-                .blocking_lock()
-                .recv()
-            {
+        tokio::spawn(async move {
+            match rx.lock().await.recv() {
                 Ok(received_message) => {
-                    if let Err(err) = sender.blocking_send((name.clone(), received_message)) {
+                    if let Err(err) = sender.send((name.clone(), received_message)).await {
                         trace!("{SID}::Error sending received message from {name}: {err}");
                     }
                 }
@@ -301,21 +302,26 @@ impl Coordinator {
                 }
                 (prx, l)
             };
-            let responses = self.collect_participant_responses(prx, num_participants).await;
+            let responses = self
+                .collect_participant_responses(prx, num_participants)
+                .await;
 
             let cont = self.prepare_final_decision(responses);
 
             let participant_response = self.prepare_participant_response(&client_request, cont);
             let coordinator = self.clone();
             tokio::spawn(async move {
-                coordinator.send_response_to_participants(participant_response)
+                coordinator
+                    .send_response_to_participants(participant_response)
                     .await;
             });
 
             let client_response = self.prepare_client_response(&client_request, cont).await;
             let coordinator = self.clone();
             tokio::spawn(async move {
-                coordinator.send_response_to_client(client_response, &client_name).await;
+                coordinator
+                    .send_response_to_client(client_response, &client_name)
+                    .await;
             });
         }
     }

@@ -2,7 +2,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::thread::sleep;
 use std::time::Duration;
 
 use ipc_channel::ipc::IpcReceiver as Receiver;
@@ -44,7 +43,7 @@ impl Client {
 
         // TODO: Wait for CoordinatorExit message instead?
         while self.running.load(Ordering::SeqCst) {
-            sleep(Duration::from_secs(1));
+            std::thread::sleep(Duration::from_secs(1));
         }
 
         info!("{}::Exiting", self.id_str.clone());
