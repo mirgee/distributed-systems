@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 
 use ipc_channel::ipc::IpcReceiver as Receiver;
 use ipc_channel::ipc::IpcSender as Sender;
+use tokio::sync::RwLock;
 
 use crate::message::MessageType;
 use crate::message::ProtocolMessage;
@@ -28,9 +29,9 @@ pub struct Coordinator {
     log: Arc<Mutex<oplog::OpLog>>,
     stats: Arc<StatsAtomic>,
     participant_senders: Arc<Mutex<HashMap<String, Sender<ProtocolMessage>>>>,
-    participant_receivers: Arc<Mutex<HashMap<String, Arc<Mutex<Receiver<ProtocolMessage>>>>>>,
+    participant_receivers: Arc<RwLock<HashMap<String, Arc<Mutex<Receiver<ProtocolMessage>>>>>>,
     client_senders: Arc<Mutex<HashMap<String, Sender<ProtocolMessage>>>>,
-    client_receivers: Arc<Mutex<HashMap<String, Arc<Mutex<Receiver<ProtocolMessage>>>>>>,
+    client_receivers: Arc<RwLock<HashMap<String, Arc<Mutex<Receiver<ProtocolMessage>>>>>>,
 }
 
 impl Coordinator {
@@ -59,7 +60,7 @@ impl Coordinator {
             .await
             .insert(name.clone(), tx);
         self.participant_receivers
-            .lock()
+            .write()
             .await
             .insert(name.clone(), Arc::new(Mutex::new(rx)));
     }
@@ -73,7 +74,7 @@ impl Coordinator {
         assert!(self.state == CoordinatorState::Quiescent);
         self.client_senders.lock().await.insert(name.clone(), tx);
         self.client_receivers
-            .lock()
+            .write()
             .await
             .insert(name.clone(), Arc::new(Mutex::new(rx)));
     }
@@ -283,7 +284,7 @@ impl Coordinator {
             self.propose_to_participants(&client_request).await;
 
             let (prx, num_participants) = {
-                let participant_receivers = self.participant_receivers.lock().await;
+                let participant_receivers = self.participant_receivers.read().await;
                 let l = participant_receivers.len();
                 let (ptx, prx) = tokio::sync::mpsc::channel(l);
                 for (participant_name, participant_rx) in participant_receivers.iter() {
@@ -324,7 +325,7 @@ impl Coordinator {
         self.state = CoordinatorState::Running;
 
         let (ctx, mut crx) = tokio::sync::mpsc::channel(32);
-        for (client_name, client_rx) in self.client_receivers.lock().await.iter() {
+        for (client_name, client_rx) in self.client_receivers.read().await.iter() {
             let ctx_clone = ctx.clone();
             Self::spawn_blocking_listener(
                 client_name.clone(),
@@ -354,16 +355,25 @@ impl Coordinator {
             }
         }
 
-        // If there was no need to do this, we might rather use DashMap for client_senders
-        // for client_tx in self.client_senders.lock().await.values() {
-        //     let msg = ProtocolMessage::generate(
-        //         MessageType::CoordinatorExit,
-        //         "0".to_string(),
-        //         SID.to_string(),
-        //         0,
-        //     );
-        //     client_tx.send(msg).unwrap();
-        // }
+        for client_tx in self.client_senders.lock().await.values() {
+            let msg = ProtocolMessage::generate(
+                MessageType::CoordinatorExit,
+                "0".to_string(),
+                SID.to_string(),
+                0,
+            );
+            client_tx.send(msg).unwrap();
+        }
+
+        for participant_tx in self.participant_senders.lock().await.values() {
+            let msg = ProtocolMessage::generate(
+                MessageType::CoordinatorExit,
+                "0".to_string(),
+                SID.to_string(),
+                0,
+            );
+            participant_tx.send(msg).unwrap();
+        }
         self.report_status().await;
     }
 }

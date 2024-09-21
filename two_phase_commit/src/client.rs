@@ -87,6 +87,9 @@ impl Client {
     pub fn protocol(&mut self, n_requests: u32) {
         info!("{}::Beginning protocol", self.id_str.clone());
         for _ in 0..n_requests {
+            if !self.running.load(Ordering::SeqCst) {
+                break;
+            }
             self.send_next_operation();
             info!("{}::Receiving Coordinator result", self.id_str.clone());
 

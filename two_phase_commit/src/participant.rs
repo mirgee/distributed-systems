@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ipc_channel::ipc::TryRecvError;
-use ipc_channel::ipc::IpcReceiver as Receiver;
+use ipc_channel::ipc::{IpcError, IpcReceiver as Receiver};
 use ipc_channel::ipc::IpcSender as Sender;
+use ipc_channel::ipc::TryRecvError;
 use rand::prelude::*;
 
 use crate::message::MessageType;
@@ -73,12 +73,11 @@ impl Participant {
             self.tx.send(pm).unwrap();
         } else {
             trace!("{}::Failed to send message", self.id_str.clone());
-            // Optionally handle send failure, e.g., retry or log
         }
     }
 
-    fn receive(&mut self) -> Result<ProtocolMessage, TryRecvError> {
-        match self.rx.try_recv() {
+    fn receive(&mut self) -> Result<ProtocolMessage, IpcError> {
+        match self.rx.recv() {
             Ok(message) => {
                 self.log.append(
                     message.mtype,
@@ -94,9 +93,12 @@ impl Participant {
 
     fn handle_propose(&mut self, message: &ProtocolMessage) {
         let txid = message.txid.clone();
-        let transaction = self.transactions.entry(txid.clone()).or_insert(Transaction {
-            state: TransactionState::Quiescent,
-        });
+        let transaction = self
+            .transactions
+            .entry(txid.clone())
+            .or_insert(Transaction {
+                state: TransactionState::Quiescent,
+            });
 
         assert_eq!(transaction.state, TransactionState::Quiescent);
         self.stats.unknown += 1;
@@ -132,7 +134,11 @@ impl Participant {
             self.stats.committed += 1;
             self.transactions.remove(&txid);
         } else {
-            trace!("{}::Received commit for unknown transaction {}", self.id_str, txid);
+            trace!(
+                "{}::Received commit for unknown transaction {}",
+                self.id_str,
+                txid
+            );
         }
     }
 
@@ -144,7 +150,11 @@ impl Participant {
             self.stats.aborted += 1;
             self.transactions.remove(&txid);
         } else {
-            trace!("{}::Received abort for unknown transaction {}", self.id_str, txid);
+            trace!(
+                "{}::Received abort for unknown transaction {}",
+                self.id_str,
+                txid
+            );
         }
     }
 
@@ -155,32 +165,31 @@ impl Participant {
             MessageType::CoordinatorAbort => self.handle_abort(message),
             MessageType::CoordinatorCommit => self.handle_commit(message),
             MessageType::CoordinatorExit => self.running.store(false, Ordering::SeqCst),
-            _ => panic!("{}::Unexpected message type {:?}", self.id_str, message.mtype),
+            _ => panic!(
+                "{}::Unexpected message type {:?}",
+                self.id_str, message.mtype
+            ),
         }
     }
 
     fn report_status(&mut self) {
         println!(
             "{:16}:\tCommitted: {:6}\tAborted: {:6}\tUnknown: {:6}",
-            self.id_str.clone(),
-            self.stats.committed,
-            self.stats.aborted,
-            self.stats.unknown,
+            self.id_str, self.stats.committed, self.stats.aborted, self.stats.unknown,
         );
     }
 
     // TODO: Support handling multiple transactions in parallel?
     pub fn protocol(&mut self) {
-        info!("{}::Beginning protocol", self.id_str.clone());
+        info!("{}::Beginning protocol", self.id_str);
 
-        // TODO: Refactor to use async code
         while self.running.load(Ordering::SeqCst) {
             match self.receive() {
                 Ok(message) => {
                     self.perform_operation(&message);
                 }
-                Err(_) => {
-                    std::thread::sleep(Duration::from_millis(100));
+                Err(err) => {
+                    error!("{}::Error receiving a message: {}", self.id_str, err);
                 }
             }
         }
