@@ -77,7 +77,7 @@ impl Client {
     pub fn report_status(&mut self) {
         println!(
             "{:16}:\tCommitted: {:6}\tAborted: {:6}\tUnknown: {:6}",
-            self.id_str.clone(),
+            self.id_str,
             self.stats.committed,
             self.stats.aborted,
             self.stats.unknown,

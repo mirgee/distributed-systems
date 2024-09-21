@@ -1,4 +1,5 @@
 // TODO: Better error handling
+// TODO: Use tokio::net::UnixStream or some other crate instead of ipc_channel for async support
 
 #[macro_use]
 extern crate log;
@@ -21,11 +22,11 @@ use participant::Participant;
 use std::env;
 use std::fs;
 use std::process::{Child, Command};
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use message::ProtocolMessage;
 
-// TODO: Try using lock-free datastructure for this
 #[derive(Debug, Default)]
 pub struct Stats {
     pub committed: u64,
@@ -33,6 +34,14 @@ pub struct Stats {
     pub unknown: u64,
 }
 
+#[derive(Debug, Default)]
+pub struct StatsAtomic {
+    pub committed: AtomicU64,
+    pub aborted: AtomicU64,
+    pub unknown: AtomicU64,
+}
+
+// TODO: Refactor channel establishment methods out
 fn spawn_child_and_connect(
     child_opts: &tpcoptions::TPCOptions,
     mode: &str,

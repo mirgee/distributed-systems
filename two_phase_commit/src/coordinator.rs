@@ -11,7 +11,7 @@ use crate::message::MessageType;
 use crate::message::ProtocolMessage;
 use crate::oplog;
 
-use crate::Stats;
+use crate::StatsAtomic;
 
 static SID: &str = "Coordinator";
 
@@ -26,7 +26,7 @@ pub struct Coordinator {
     state: CoordinatorState,
     running: Arc<AtomicBool>,
     log: Arc<Mutex<oplog::OpLog>>,
-    stats: Arc<Mutex<Stats>>,
+    stats: Arc<StatsAtomic>,
     participant_senders: Arc<Mutex<HashMap<String, Sender<ProtocolMessage>>>>,
     participant_receivers: Arc<Mutex<HashMap<String, Arc<Mutex<Receiver<ProtocolMessage>>>>>>,
     client_senders: Arc<Mutex<HashMap<String, Sender<ProtocolMessage>>>>,
@@ -79,10 +79,9 @@ impl Coordinator {
     }
 
     async fn report_status(&mut self) {
-        let stats = self.stats.lock().await;
         println!(
-            "Coordinator    :\tCommitted: {:6}\tAborted: {:6}\tUnknown: {:6}",
-            stats.committed, stats.aborted, stats.unknown,
+            "Coordinator    :\tCommitted: {:6?}\tAborted: {:6?}\tUnknown: {:6?}",
+            self.stats.committed, self.stats.aborted, self.stats.unknown,
         );
     }
 
@@ -140,11 +139,11 @@ impl Coordinator {
         sender: tokio::sync::mpsc::Sender<(String, ProtocolMessage)>,
         running_process: Arc<AtomicBool>,
     ) {
-        tokio::spawn(async move {
+        std::thread::spawn(move || {
             while running_process.load(Ordering::SeqCst) {
-                match rx.lock().await.recv() {
+                match rx.blocking_lock().recv() {
                     Ok(received_message) => {
-                        if let Err(err) = sender.send((name.clone(), received_message)).await {
+                        if let Err(err) = sender.blocking_send((name.clone(), received_message)) {
                             trace!("{SID}::Error sending received message from {name}: {err}");
                         }
                     }
@@ -164,10 +163,10 @@ impl Coordinator {
         rx: Arc<Mutex<Receiver<ProtocolMessage>>>,
         sender: tokio::sync::mpsc::Sender<(String, ProtocolMessage)>,
     ) {
-        tokio::spawn(async move {
-            match rx.lock().await.recv() {
+        std::thread::spawn(move || {
+            match rx.blocking_lock().recv() {
                 Ok(received_message) => {
-                    if let Err(err) = sender.send((name.clone(), received_message)).await {
+                    if let Err(err) = sender.blocking_send((name.clone(), received_message)) {
                         trace!("{SID}::Error sending received message from {name}: {err}");
                     }
                 }
@@ -186,9 +185,8 @@ impl Coordinator {
     ) -> ProtocolMessage {
         if cont {
             {
-                let mut lock = self.stats.lock().await;
-                lock.unknown -= 1;
-                lock.committed += 1;
+                self.stats.unknown.fetch_sub(1, Ordering::SeqCst);
+                self.stats.committed.fetch_add(1, Ordering::SeqCst);
             }
             ProtocolMessage::generate(
                 MessageType::ClientResultCommit,
@@ -198,9 +196,8 @@ impl Coordinator {
             )
         } else {
             {
-                let mut lock = self.stats.lock().await;
-                lock.unknown -= 1;
-                lock.aborted += 1;
+                self.stats.unknown.fetch_sub(1, Ordering::SeqCst);
+                self.stats.aborted.fetch_add(1, Ordering::SeqCst);
             }
             ProtocolMessage::generate(
                 MessageType::ClientResultAbort,
@@ -274,10 +271,7 @@ impl Coordinator {
         client_name: String,
         client_request: ProtocolMessage,
     ) {
-        {
-            let mut lock = self.stats.lock().await;
-            lock.unknown += 1;
-        }
+        self.stats.unknown.fetch_add(1, Ordering::SeqCst);
         self.log.lock().await.append(
             client_request.mtype,
             client_request.txid.clone(),
@@ -361,15 +355,15 @@ impl Coordinator {
         }
 
         // If there was no need to do this, we might rather use DashMap for client_senders
-        for client_tx in self.client_senders.lock().await.values() {
-            let msg = ProtocolMessage::generate(
-                MessageType::CoordinatorExit,
-                "0".to_string(),
-                SID.to_string(),
-                0,
-            );
-            client_tx.send(msg).unwrap();
-        }
+        // for client_tx in self.client_senders.lock().await.values() {
+        //     let msg = ProtocolMessage::generate(
+        //         MessageType::CoordinatorExit,
+        //         "0".to_string(),
+        //         SID.to_string(),
+        //         0,
+        //     );
+        //     client_tx.send(msg).unwrap();
+        // }
         self.report_status().await;
     }
 }

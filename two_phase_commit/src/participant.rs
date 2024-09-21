@@ -169,33 +169,22 @@ impl Participant {
         );
     }
 
-    fn wait_for_exit_signal(&mut self) {
-        info!("{}::Waiting for exit signal", self.id_str.clone());
-
-        // TODO: Wait for CoordinatorExit?
-        while self.running.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_secs(1));
-        }
-
-        info!("{}::Exiting", self.id_str.clone());
-    }
-
+    // TODO: Support handling multiple transactions in parallel?
     pub fn protocol(&mut self) {
         info!("{}::Beginning protocol", self.id_str.clone());
 
+        // TODO: Refactor to use async code
         while self.running.load(Ordering::SeqCst) {
             match self.receive() {
                 Ok(message) => {
                     self.perform_operation(&message);
                 }
                 Err(_) => {
-                    // TODO: Refactor to use async code
                     std::thread::sleep(Duration::from_millis(100));
                 }
             }
         }
 
-        self.wait_for_exit_signal();
         self.report_status();
     }
 }
