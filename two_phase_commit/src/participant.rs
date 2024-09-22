@@ -1,11 +1,9 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use ipc_channel::ipc::{IpcError, IpcReceiver as Receiver};
 use ipc_channel::ipc::IpcSender as Sender;
-use ipc_channel::ipc::TryRecvError;
 use rand::prelude::*;
 
 use crate::message::MessageType;
@@ -31,7 +29,6 @@ struct Transaction {
 #[derive(Debug)]
 pub struct Participant {
     id_str: String,
-    // TODO: Manage transaction states protperly
     transactions: HashMap<String, Transaction>,
     log: oplog::OpLog,
     running: Arc<AtomicBool>,
@@ -179,7 +176,6 @@ impl Participant {
         );
     }
 
-    // TODO: Support handling multiple transactions in parallel?
     pub fn protocol(&mut self) {
         info!("{}::Beginning protocol", self.id_str);
 

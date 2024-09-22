@@ -1,6 +1,3 @@
-// TODO: Better error handling
-// TODO: Use tokio::net::UnixStream or some other crate instead of ipc_channel for async support
-
 #[macro_use]
 extern crate log;
 
@@ -41,7 +38,6 @@ pub struct StatsAtomic {
     pub unknown: AtomicU64,
 }
 
-// TODO: Refactor channel establishment methods out
 fn spawn_child_and_connect(
     child_opts: &tpcoptions::TPCOptions,
     mode: &str,
@@ -165,7 +161,6 @@ async fn main() {
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     let m = opts.mode.clone();
-    // TODO: Consider using tokio::signal::ctrl_c
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
         if m == "run" {

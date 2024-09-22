@@ -92,7 +92,6 @@ impl Coordinator {
         num_participants: usize,
     ) -> Vec<ProtocolMessage> {
         let mut responses = Vec::new();
-        // TODO: Handle timeouts
         while let Some((_, response)) = rx.recv().await {
             self.log.lock().await.append(
                 response.mtype,
@@ -231,13 +230,28 @@ impl Coordinator {
         }
     }
 
+    fn prepare_coordinator_exit(&self) -> ProtocolMessage {
+        ProtocolMessage::generate(
+            MessageType::CoordinatorExit,
+            "0".to_string(),
+            SID.to_string(),
+            0,
+        )
+    }
+
     fn prepare_final_decision(&self, responses: Vec<ProtocolMessage>) -> bool {
         responses
             .iter()
             .all(|r| r.mtype == MessageType::ParticipantVoteCommit)
     }
 
-    async fn send_response_to_participants(&self, message: ProtocolMessage) {
+    async fn send_message_to_participants(&self, message: &ProtocolMessage) {
+        self.log.lock().await.append(
+            message.mtype,
+            message.txid.clone(),
+            message.senderid.clone(),
+            message.opid,
+        );
         let mut tasks = tokio::task::JoinSet::new();
         for participant_tx in self.participant_senders.lock().await.values() {
             let participant_tx = participant_tx.clone();
@@ -249,7 +263,25 @@ impl Coordinator {
         tasks.join_all().await;
     }
 
-    async fn send_response_to_client(&self, message: ProtocolMessage, client_name: &str) {
+    async fn send_message_to_clients(&self, message: &ProtocolMessage) {
+        self.log.lock().await.append(
+            message.mtype,
+            message.txid.clone(),
+            message.senderid.clone(),
+            message.opid,
+        );
+        let mut tasks = tokio::task::JoinSet::new();
+        for client_tx in self.client_senders.lock().await.values() {
+            let client_tx = client_tx.clone();
+            let message = message.clone();
+            tasks.spawn(async move {
+                client_tx.send(message).ok();
+            });
+        }
+        tasks.join_all().await;
+    }
+
+    async fn send_message_to_client(&self, message: ProtocolMessage, client_name: &str) {
         self.log.lock().await.append(
             message.mtype,
             message.txid.clone(),
@@ -307,7 +339,7 @@ impl Coordinator {
             let coordinator = self.clone();
             tokio::spawn(async move {
                 coordinator
-                    .send_response_to_participants(participant_response)
+                    .send_message_to_participants(&participant_response)
                     .await;
             });
 
@@ -315,10 +347,16 @@ impl Coordinator {
             let coordinator = self.clone();
             tokio::spawn(async move {
                 coordinator
-                    .send_response_to_client(client_response, &client_name)
+                    .send_message_to_client(client_response, &client_name)
                     .await;
             });
         }
+    }
+
+    async fn handle_exit(&self) {
+        let message = self.prepare_coordinator_exit();
+        self.send_message_to_participants(&message).await;
+        self.send_message_to_clients(&message).await;
     }
 
     pub async fn protocol(&mut self) {
@@ -338,7 +376,6 @@ impl Coordinator {
         while self.running.load(Ordering::SeqCst) {
             tokio::select! {
                 Some((client_name, client_request)) = crx.recv() => {
-                    // Consider cloning only what is necessary instead of entire self?
                     let mut coordinator = self.clone();
                     tokio::spawn(async move {
                         coordinator.handle_client_request(client_name, client_request).await;
@@ -355,25 +392,7 @@ impl Coordinator {
             }
         }
 
-        for client_tx in self.client_senders.lock().await.values() {
-            let msg = ProtocolMessage::generate(
-                MessageType::CoordinatorExit,
-                "0".to_string(),
-                SID.to_string(),
-                0,
-            );
-            client_tx.send(msg).unwrap();
-        }
-
-        for participant_tx in self.participant_senders.lock().await.values() {
-            let msg = ProtocolMessage::generate(
-                MessageType::CoordinatorExit,
-                "0".to_string(),
-                SID.to_string(),
-                0,
-            );
-            participant_tx.send(msg).unwrap();
-        }
+        self.handle_exit().await;
         self.report_status().await;
     }
 }
