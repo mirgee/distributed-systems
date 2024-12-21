@@ -17,8 +17,7 @@ pub struct CandidateState {
 
 #[derive(Default)]
 pub struct LeaderState {
-    pub followers: BTreeSet<NodeId>,
-    pub ticks_to_heartbeat: u32,
+    pub heartbeat_countdown: u32,
 }
 
 pub enum RoleState {

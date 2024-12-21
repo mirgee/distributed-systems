@@ -26,7 +26,7 @@ pub struct Node<Log, Random> {
     node_id: NodeId,
     current_term: TermId,
     voted_for: Option<NodeId>,
-    peers: BTreeSet<NodeId>,
+    peers: BTreeSet<NodeId>, // TODO: Map to a peer state
     log_state: LogState<Log>,
     role_state: RoleState,
     config: Config,
@@ -94,7 +94,7 @@ where
     pub fn tick(&mut self) -> Option<RaftMessage> {
         match &mut self.role_state {
             RoleState::LeaderState(LeaderState {
-                ticks_to_heartbeat, ..
+                heartbeat_countdown: ticks_to_heartbeat, ..
             }) => {
                 *ticks_to_heartbeat = ticks_to_heartbeat.saturating_sub(1);
                 if *ticks_to_heartbeat == 0 {
@@ -126,30 +126,8 @@ where
         }
     }
 
+    // TODO: We should send and respond with message envelope
     fn receive_message(&mut self, message: RaftMessage, from: NodeId) -> Option<RaftMessage> {
-        self.update_term(&message, from);
-
-        match message.rpc {
-            Rpc::RequestVote(request_vote) => self.handle_request_vote(request_vote),
-            Rpc::RequestVoteResponse(request_vote_response) => {
-                self.handle_request_vote_response(request_vote_response)
-            }
-            Rpc::AppendEntries | Rpc::AppendEntriesResponse => todo!(),
-        }
-    }
-
-    fn handle_request_vote(&mut self, request_vote: RequestVote) -> Option<RaftMessage> {
-        todo!()
-    }
-
-    fn handle_request_vote_response(
-        &mut self,
-        request_vote_response: RequestVoteResponse,
-    ) -> Option<RaftMessage> {
-        todo!()
-    }
-
-    fn update_term(&mut self, message: &RaftMessage, from: NodeId) {
         if message.term > self.current_term {
             self.current_term = message.term;
             self.role_state = RoleState::FollowerState(FollowerState {
@@ -160,6 +138,48 @@ where
                 election_countdown: self.random_election_countdown(),
             });
         }
+
+        let response = match message.rpc {
+            Rpc::RequestVote(request_vote) => self.handle_request_vote(request_vote, from),
+            Rpc::RequestVoteResponse(request_vote_response) => {
+                self.handle_request_vote_response(request_vote_response)
+            }
+            Rpc::AppendEntries | Rpc::AppendEntriesResponse => todo!(),
+        };
+
+        if let RoleState::CandidateState(candidate_state) = &self.role_state {
+            if candidate_state.votes_granted.len() >= self.majority_size() {
+                self.role_state = RoleState::LeaderState(LeaderState {
+                    heartbeat_countdown: self.config.heartbeat_interval,
+                })
+            }
+        }
+
+        response
+    }
+
+    fn handle_request_vote(&mut self, request_vote: RequestVote, from: NodeId) -> Option<RaftMessage> {
+        let vote_granted = (request_vote.last_log_term > self.current_term)
+            || (request_vote.last_log_term == self.current_term
+                && request_vote.last_log_index >= self.log_state.log.get_last_index().unwrap());
+        // TODO: Can we vote for a leader if their term is higher than our current term?
+        if vote_granted {
+            self.voted_for = Some(from);
+        }
+
+        Some(RaftMessage {
+            term: self.current_term,
+            rpc: Rpc::RequestVoteResponse(RequestVoteResponse {
+                vote_granted 
+            })
+        })
+    }
+
+    fn handle_request_vote_response(
+        &mut self,
+        request_vote_response: RequestVoteResponse,
+    ) -> Option<RaftMessage> {
+        todo!()
     }
 
     fn random_election_countdown(&mut self) -> u32 {
@@ -168,5 +188,13 @@ where
             self.config.min_election_countdown,
             self.config.max_election_countdown,
         )
+    }
+
+    pub fn is_leader(&self) -> bool {
+        matches!(self.role_state, RoleState::LeaderState(_))
+    }
+
+    fn majority_size(&self) -> usize {
+        self.peers.len() / 2 + 1
     }
 }
