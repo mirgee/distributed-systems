@@ -11,6 +11,7 @@ use crate::{
     log::{LogState, RaftLog},
     messages::{
         RaftMessage,
+        append_entries::{AppendEntries, AppendEntriesResponse},
         request_vote::{RequestVote, RequestVoteResponse},
         rpc::Rpc,
     },
@@ -60,6 +61,7 @@ where
             role_state: RoleState::FollowerState(FollowerState {
                 leader: None,
                 election_countdown,
+                election_countdown_starting_point: election_countdown,
             }),
             config,
         }
@@ -76,9 +78,11 @@ where
                     vg.insert(self.node_id);
                     vg
                 };
+                let election_countdown = self.random_election_countdown();
                 self.role_state = RoleState::CandidateState(CandidateState {
                     votes_granted,
-                    election_countdown: self.random_election_countdown(),
+                    election_countdown,
+                    election_countdown_starting_point: election_countdown,
                 });
                 Some(RaftMessage {
                     term: self.current_term,
@@ -101,7 +105,11 @@ where
                     *ticks_to_heartbeat = self.config.heartbeat_interval;
                     Some(RaftMessage {
                         term: self.current_term,
-                        rpc: Rpc::AppendEntries,
+                        rpc: Rpc::AppendEntries(AppendEntries {
+                            prev_log_index: 0,
+                            prev_log_term: 0,
+                            entries: Vec::new()
+                        }),
                     })
                 } else {
                     None
@@ -126,25 +134,29 @@ where
         }
     }
 
-    // TODO: We should send and respond with message envelope
-    fn receive_message(&mut self, message: RaftMessage, from: NodeId) -> Option<RaftMessage> {
+    // TODO: We should receive and respond with message envelope
+    pub fn receive_message(&mut self, message: RaftMessage, from: NodeId) -> Option<RaftMessage> {
         if message.term > self.current_term {
             self.current_term = message.term;
+            let election_countdown = self.random_election_countdown();
             self.role_state = RoleState::FollowerState(FollowerState {
                 // TODO: Can we assume the sender is the leader
                 leader: Some(from),
                 // TODO: Do we create new random countdown or reset the previous one?
                 // Does it depend on context?
-                election_countdown: self.random_election_countdown(),
+                election_countdown,
+                election_countdown_starting_point: election_countdown,
             });
         }
 
         let response = match message.rpc {
             Rpc::RequestVote(request_vote) => self.handle_request_vote(request_vote, from),
             Rpc::RequestVoteResponse(request_vote_response) => {
-                self.handle_request_vote_response(request_vote_response)
+                self.handle_request_vote_response(request_vote_response, from)
             }
-            Rpc::AppendEntries | Rpc::AppendEntriesResponse => todo!(),
+            Rpc::AppendEntries(append_entries) => self.handle_append_entries(append_entries, from, message.term),
+            Rpc::AppendEntriesResponse(append_entries_response) => self.handle_append_entries_response(append_entries_response)
+
         };
 
         if let RoleState::CandidateState(candidate_state) = &self.role_state {
@@ -158,7 +170,11 @@ where
         response
     }
 
-    fn handle_request_vote(&mut self, request_vote: RequestVote, from: NodeId) -> Option<RaftMessage> {
+    fn handle_request_vote(
+        &mut self,
+        request_vote: RequestVote,
+        from: NodeId,
+    ) -> Option<RaftMessage> {
         let vote_granted = (request_vote.last_log_term > self.current_term)
             || (request_vote.last_log_term == self.current_term
                 && request_vote.last_log_index >= self.log_state.log.get_last_index().unwrap());
@@ -169,17 +185,63 @@ where
 
         Some(RaftMessage {
             term: self.current_term,
-            rpc: Rpc::RequestVoteResponse(RequestVoteResponse {
-                vote_granted 
-            })
+            rpc: Rpc::RequestVoteResponse(RequestVoteResponse { vote_granted }),
         })
     }
 
     fn handle_request_vote_response(
         &mut self,
         request_vote_response: RequestVoteResponse,
+        from: NodeId,
     ) -> Option<RaftMessage> {
-        todo!()
+        if let RoleState::CandidateState(candidate_state) = &mut self.role_state {
+            if request_vote_response.vote_granted {
+                candidate_state.votes_granted.insert(from);
+            }
+        }
+        None
+    }
+
+    fn handle_append_entries(
+        &mut self,
+        append_entries: AppendEntries,
+        from: NodeId,
+        term: TermId,
+    ) -> Option<RaftMessage> {
+        if term >= self.current_term {
+            match &mut self.role_state {
+                RoleState::LeaderState(leader_state) => unreachable!("shouldn't happen"),
+                RoleState::FollowerState(follower_state) => {
+                    follower_state.leader = Some(from);
+                    follower_state.election_countdown =
+                        follower_state.election_countdown_starting_point;
+                }
+                RoleState::CandidateState(_) => {
+                    let election_countdown = self.random_election_countdown();
+                    self.role_state = RoleState::FollowerState(FollowerState {
+                        leader: Some(from),
+                        election_countdown,
+                        election_countdown_starting_point: election_countdown,
+                    });
+                }
+            }
+            Some(RaftMessage {
+                term,
+                rpc: Rpc::AppendEntriesResponse(AppendEntriesResponse { success: true }),
+            })
+        } else {
+            Some(RaftMessage {
+                term,
+                rpc: Rpc::AppendEntriesResponse(AppendEntriesResponse { success: false }),
+            })
+        }
+    }
+
+    fn handle_append_entries_response(
+        &mut self,
+        append_entries_response: AppendEntriesResponse,
+    ) -> Option<RaftMessage> {
+        None
     }
 
     fn random_election_countdown(&mut self) -> u32 {

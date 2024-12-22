@@ -1,8 +1,8 @@
-use super::request_vote::{RequestVote, RequestVoteResponse};
+use super::{append_entries::{AppendEntries, AppendEntriesResponse}, request_vote::{RequestVote, RequestVoteResponse}};
 
 pub enum Rpc {
     RequestVote(RequestVote),
     RequestVoteResponse(RequestVoteResponse),
-    AppendEntries,
-    AppendEntriesResponse,
+    AppendEntries(AppendEntries),
+    AppendEntriesResponse(AppendEntriesResponse),
 }

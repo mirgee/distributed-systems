@@ -1,3 +1,5 @@
+pub mod in_memory;
+
 use std::fmt::Debug;
 
 use crate::node::state::TermId;
