@@ -12,7 +12,7 @@ pub struct RaftMessage {
     pub rpc: Rpc,
 }
 
-pub struct MessageEnvelope {
+pub struct RaftMessageEnvelope {
     pub msg: RaftMessage,
     pub dst: MessageDestination,
     pub src: NodeId,

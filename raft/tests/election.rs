@@ -2,51 +2,65 @@ use std::collections::BTreeSet;
 
 use raft::{
     log::in_memory::RaftLogInMemory,
-    messages::{RaftMessage, request_vote::RequestVoteResponse, rpc::Rpc},
-    node::{RaftConfig, RaftNode},
+    messages::{
+        MessageDestination, RaftMessage, RaftMessageEnvelope, request_vote::RequestVoteResponse,
+        rpc::Rpc,
+    },
+    node::state::{NodeId, RaftConfig, RaftNode},
 };
 use rand_core::OsRng;
 
-#[test]
-pub fn win_election_single_node() {
+fn create_node(peers: Vec<NodeId>) -> RaftNode<RaftLogInMemory, OsRng> {
     let config = RaftConfig {
         heartbeat_interval: 1,
         min_election_countdown: 2,
         max_election_countdown: 3,
     };
-    let log = RaftLogInMemory::new();
-    let rng = OsRng;
-    let mut node = RaftNode::new(0, BTreeSet::new(), log, config, rng);
-    let mut is_leader = node.is_leader();
+    RaftNode::new(
+        0,
+        BTreeSet::from_iter(peers),
+        RaftLogInMemory::new(),
+        config,
+        OsRng,
+    )
+}
+
+#[test]
+pub fn win_election_single_node() {
+    let mut node = create_node(vec![]);
+    let is_leader = node.is_leader();
     assert!(!is_leader);
-    while !is_leader {
+    for _ in 0..=node.config().max_election_countdown {
         node.tick();
-        is_leader = node.is_leader();
     }
+    assert!(node.is_leader());
 }
 
 #[test]
 pub fn win_election_majority_vote() {
-    let config = RaftConfig {
-        heartbeat_interval: 1,
-        min_election_countdown: 2,
-        max_election_countdown: 3,
-    };
-    let log = RaftLogInMemory::new();
-    let rng = OsRng;
-    let mut node = RaftNode::new(0, BTreeSet::from_iter(vec![1, 2]), log, config, rng);
+    let mut node = create_node(vec![1, 2]);
     assert!(!node.is_leader());
     let mut msg = None;
     while msg.is_none() {
         msg = node.tick();
     }
-    assert!(matches!(msg.unwrap().rpc, Rpc::RequestVote(_)));
+    assert!(matches!(msg.unwrap().msg.rpc, Rpc::RequestVote(_)));
     let response = RaftMessage {
         term: node.current_term(),
         rpc: Rpc::RequestVoteResponse(RequestVoteResponse { vote_granted: true }),
     };
-    node.receive_message(response.clone(), 1);
-    node.receive_message(response, 2);
+    let response1 = RaftMessageEnvelope {
+        msg: response.clone(),
+        src: 1,
+        dst: MessageDestination::To(0),
+    };
+    let response2 = RaftMessageEnvelope {
+        msg: response,
+        src: 2,
+        dst: MessageDestination::To(0),
+    };
+    node.receive_message(response1);
+    node.receive_message(response2);
     assert!(node.is_leader());
 }
 

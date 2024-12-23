@@ -4,31 +4,18 @@ pub mod state;
 use std::collections::BTreeSet;
 
 use rand_core::RngCore;
-use state::{CandidateState, FollowerState, LeaderState, NodeId, RoleState, TermId};
+use state::{
+    CandidateState, FollowerState, LeaderState, NodeId, RaftConfig, RaftNode, RoleState, TermId,
+};
 
 use crate::{
     log::{LogState, RaftLog},
-    messages::{RaftMessage, append_entries::AppendEntries, request_vote::RequestVote, rpc::Rpc},
+    messages::{
+        MessageDestination, RaftMessage, RaftMessageEnvelope, append_entries::AppendEntries,
+        request_vote::RequestVote, rpc::Rpc,
+    },
     utils::random_election_countdown,
 };
-
-pub struct RaftConfig {
-    pub heartbeat_interval: u32,
-    pub min_election_countdown: u32,
-    pub max_election_countdown: u32,
-}
-
-// TODO: Separate the state and processing layer from client-facing messaging layer, where node subsumes both
-pub struct RaftNode<Log, Random> {
-    node_id: NodeId,
-    current_term: TermId,
-    voted_for: Option<NodeId>,
-    peers: BTreeSet<NodeId>, // TODO: Map to a peer state
-    log_state: LogState<Log>,
-    role_state: RoleState,
-    config: RaftConfig,
-    rng: Random,
-}
 
 impl<Log, Random> RaftNode<Log, Random>
 where
@@ -63,21 +50,24 @@ where
         }
     }
 
-    pub fn tick(&mut self) -> Option<RaftMessage> {
+    pub fn tick(&mut self) -> Option<RaftMessageEnvelope> {
         match &mut self.role_state {
             RoleState::LeaderState(LeaderState {
-                heartbeat_countdown: ticks_to_heartbeat, ..
+                heartbeat_countdown: ticks_to_heartbeat,
+                ..
             }) => {
                 *ticks_to_heartbeat = ticks_to_heartbeat.saturating_sub(1);
                 if *ticks_to_heartbeat == 0 {
                     *ticks_to_heartbeat = self.config.heartbeat_interval;
-                    Some(RaftMessage {
-                        term: self.current_term,
-                        rpc: Rpc::AppendEntries(AppendEntries {
-                            prev_log_index: 0,
-                            prev_log_term: 0,
-                            entries: Vec::new()
-                        }),
+                    Some(RaftMessageEnvelope {
+                        msg: RaftMessage {
+                            term: self.current_term,
+                            rpc: Rpc::AppendEntries(AppendEntries {
+                                entries: Vec::new(),
+                            }),
+                        },
+                        src: self.node_id,
+                        dst: MessageDestination::Broadcast,
                     })
                 } else {
                     None
@@ -87,7 +77,6 @@ where
                 election_countdown: ticks_to_election,
                 ..
             })
-            // TODO: Count our votes and potentially convert to a leader?
             | RoleState::CandidateState(CandidateState {
                 election_countdown: ticks_to_election,
                 ..
@@ -104,37 +93,25 @@ where
     }
 
     // TODO: We should receive and respond with message envelope
-    pub fn receive_message(&mut self, message: RaftMessage, from: NodeId) -> Option<RaftMessage> {
+    pub fn receive_message(&mut self, message: RaftMessageEnvelope) -> Option<RaftMessageEnvelope> {
         // TODO: We should be resetting the timer only when we receive append entries!
-        if message.term > self.current_term {
-            self.current_term = message.term;
-            let election_countdown = self.random_election_countdown();
-            self.role_state = RoleState::FollowerState(FollowerState {
-                // TODO: Can we assume the sender is the leader? Probably not, because this may be
-                // just vote request
-                leader: Some(from),
-                // TODO: Do we create new random countdown or reset the previous one?
-                // Does it depend on context?
-                election_countdown,
-                election_countdown_starting_point: election_countdown,
-            });
-        }
+        self.update_term(&message);
 
-        let response = match message.rpc {
-            Rpc::RequestVote(request_vote) => self.handle_request_vote(request_vote, from),
+        let response = match message.msg.rpc {
+            Rpc::RequestVote(request_vote) => self.handle_request_vote(request_vote, message.src),
             Rpc::RequestVoteResponse(request_vote_response) => {
                 // TODO: If respone is stale, drop and do not respond
-                self.handle_request_vote_response(request_vote_response, from)
+                self.handle_request_vote_response(request_vote_response, message.src)
             }
             Rpc::AppendEntries(append_entries) => {
-                self.handle_append_entries(append_entries, from, message.term)
+                self.handle_append_entries(append_entries, message.src, message.msg.term)
             }
             Rpc::AppendEntriesResponse(append_entries_response) => {
                 // TODO: If respone is stale, drop and do not respond
                 self.handle_append_entries_response(append_entries_response)
             }
         };
-        
+
         self.become_leader();
         response
     }
@@ -149,8 +126,24 @@ where
         }
     }
 
+    fn update_term(&mut self, message: &RaftMessageEnvelope) {
+        if message.msg.term > self.current_term {
+            self.current_term = message.msg.term;
+            let election_countdown = self.random_election_countdown();
+            self.role_state = RoleState::FollowerState(FollowerState {
+                // TODO: Can we assume the sender is the leader? Probably not, because this may be
+                // just vote request
+                leader: Some(message.src),
+                // TODO: Do we create new random countdown or reset the previous one?
+                // Does it depend on context?
+                election_countdown,
+                election_countdown_starting_point: election_countdown,
+            });
+        }
+    }
+
     // TODO: Adapt to one node setting
-    fn election_timeout(&mut self) -> Option<RaftMessage> {
+    fn election_timeout(&mut self) -> Option<RaftMessageEnvelope> {
         match self.role_state {
             RoleState::LeaderState(_) => None,
             RoleState::FollowerState(_) | RoleState::CandidateState(_) => {
@@ -166,12 +159,21 @@ where
                     election_countdown,
                     election_countdown_starting_point: election_countdown,
                 });
-                Some(RaftMessage {
-                    term: self.current_term,
-                    rpc: Rpc::RequestVote(RequestVote {
-                        last_log_index: self.log_state.log.get_last_term().unwrap().unwrap_or(0),
-                        last_log_term: self.log_state.log.get_last_term().unwrap().unwrap_or(0),
-                    }),
+                Some(RaftMessageEnvelope {
+                    msg: RaftMessage {
+                        term: self.current_term,
+                        rpc: Rpc::RequestVote(RequestVote {
+                            last_log_index: self
+                                .log_state
+                                .log
+                                .get_last_term()
+                                .unwrap()
+                                .unwrap_or(0),
+                            last_log_term: self.log_state.log.get_last_term().unwrap().unwrap_or(0),
+                        }),
+                    },
+                    src: self.node_id,
+                    dst: MessageDestination::Broadcast,
                 })
             }
         }
@@ -195,5 +197,9 @@ where
 
     pub fn current_term(&self) -> TermId {
         self.current_term
+    }
+
+    pub fn config(&self) -> &RaftConfig {
+        &self.config
     }
 }

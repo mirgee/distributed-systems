@@ -4,7 +4,7 @@ use rand_core::RngCore;
 use crate::{
     log::RaftLog,
     messages::{
-        RaftMessage,
+        MessageDestination, RaftMessage, RaftMessageEnvelope,
         append_entries::{AppendEntries, AppendEntriesResponse},
         request_vote::{RequestVote, RequestVoteResponse},
         rpc::Rpc,
@@ -22,7 +22,7 @@ where
         &mut self,
         request_vote: RequestVote,
         from: NodeId,
-    ) -> Option<RaftMessage> {
+    ) -> Option<RaftMessageEnvelope> {
         let vote_granted = (request_vote.last_log_term > self.current_term)
             || (request_vote.last_log_term == self.current_term
                 && request_vote.last_log_index >= self.log_state.log.get_last_index().unwrap());
@@ -32,9 +32,13 @@ where
             self.voted_for = Some(from);
         }
 
-        Some(RaftMessage {
-            term: self.current_term,
-            rpc: Rpc::RequestVoteResponse(RequestVoteResponse { vote_granted }),
+        Some(RaftMessageEnvelope {
+            msg: RaftMessage {
+                term: self.current_term,
+                rpc: Rpc::RequestVoteResponse(RequestVoteResponse { vote_granted }),
+            },
+            dst: MessageDestination::Broadcast,
+            src: self.node_id,
         })
     }
 
@@ -42,7 +46,7 @@ where
         &mut self,
         request_vote_response: RequestVoteResponse,
         from: NodeId,
-    ) -> Option<RaftMessage> {
+    ) -> Option<RaftMessageEnvelope> {
         if let RoleState::CandidateState(candidate_state) = &mut self.role_state {
             if request_vote_response.vote_granted {
                 candidate_state.votes_granted.insert(from);
@@ -56,7 +60,7 @@ where
         append_entries: AppendEntries,
         from: NodeId,
         term: TermId,
-    ) -> Option<RaftMessage> {
+    ) -> Option<RaftMessageEnvelope> {
         if term >= self.current_term {
             match &mut self.role_state {
                 RoleState::LeaderState(leader_state) => unreachable!("shouldn't happen"),
@@ -74,14 +78,22 @@ where
                     });
                 }
             }
-            Some(RaftMessage {
-                term,
-                rpc: Rpc::AppendEntriesResponse(AppendEntriesResponse { success: true }),
+            Some(RaftMessageEnvelope {
+                msg: RaftMessage {
+                    term,
+                    rpc: Rpc::AppendEntriesResponse(AppendEntriesResponse { success: true }),
+                },
+                dst: MessageDestination::To(from),
+                src: self.node_id,
             })
         } else {
-            Some(RaftMessage {
-                term,
-                rpc: Rpc::AppendEntriesResponse(AppendEntriesResponse { success: false }),
+            Some(RaftMessageEnvelope {
+                msg: RaftMessage {
+                    term,
+                    rpc: Rpc::AppendEntriesResponse(AppendEntriesResponse { success: false }),
+                },
+                dst: MessageDestination::To(from),
+                src: self.node_id,
             })
         }
     }
@@ -89,7 +101,7 @@ where
     pub(super) fn handle_append_entries_response(
         &mut self,
         append_entries_response: AppendEntriesResponse,
-    ) -> Option<RaftMessage> {
+    ) -> Option<RaftMessageEnvelope> {
         // TODO: If a leader receives rejection on heartbeat rejection, shouldn't they step down? I
         // think so, but can't find that mentioned in the paper.
         None

@@ -1,6 +1,6 @@
 use crate::node::state::TermId;
 
-use super::{LogEntry, LogIndex, RaftLog};
+use super::{LogEntry, LogId, RaftLog};
 
 pub struct RaftLogInMemory {
     entries: Vec<LogEntry>,
@@ -20,12 +20,12 @@ impl RaftLog for RaftLogInMemory {
         Ok(())
     }
 
-    fn get(&self, index: LogIndex) -> Result<Option<LogEntry>, Self::Error> {
+    fn get(&self, index: LogId) -> Result<Option<LogEntry>, Self::Error> {
         Ok(self.entries.get(index as usize).cloned())
     }
 
-    fn get_last_index(&self) -> Result<LogIndex, Self::Error> {
-        Ok((self.entries.len() - 1) as LogIndex)
+    fn get_last_index(&self) -> Result<LogId, Self::Error> {
+        Ok((self.entries.len() - 1) as LogId)
     }
 
     fn get_last_term(&self) -> Result<Option<TermId>, Self::Error> {
