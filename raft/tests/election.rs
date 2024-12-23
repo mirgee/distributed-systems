@@ -8,7 +8,22 @@ use raft::{
 use rand_core::OsRng;
 
 #[test]
-pub fn win_election_single_node() {}
+pub fn win_election_single_node() {
+    let config = RaftConfig {
+        heartbeat_interval: 1,
+        min_election_countdown: 2,
+        max_election_countdown: 3,
+    };
+    let log = RaftLogInMemory::new();
+    let rng = OsRng;
+    let mut node = RaftNode::new(0, BTreeSet::new(), log, config, rng);
+    let mut is_leader = node.is_leader();
+    assert!(!is_leader);
+    while !is_leader {
+        node.tick();
+        is_leader = node.is_leader();
+    }
+}
 
 #[test]
 pub fn win_election_majority_vote() {

@@ -96,6 +96,7 @@ where
                 if *ticks_to_election == 0 {
                     self.election_timeout()
                 } else {
+                    self.become_leader();
                     None
                 }
             }
@@ -133,7 +134,12 @@ where
                 self.handle_append_entries_response(append_entries_response)
             }
         };
+        
+        self.become_leader();
+        response
+    }
 
+    fn become_leader(&mut self) {
         if let RoleState::CandidateState(candidate_state) = &self.role_state {
             if candidate_state.votes_granted.len() >= self.majority_size() {
                 self.role_state = RoleState::LeaderState(LeaderState {
@@ -141,8 +147,6 @@ where
                 })
             }
         }
-
-        response
     }
 
     // TODO: Adapt to one node setting
