@@ -16,18 +16,19 @@ impl RaftLog for RaftLogInMemory {
     type Error = ();
 
     fn append(&mut self, entry: LogEntry) -> Result<(), Self::Error> {
-        todo!()
+        self.entries.push(entry);
+        Ok(())
     }
 
-    fn get(&self, index: LogIndex) -> Result<LogEntry, Self::Error> {
-        todo!()
+    fn get(&self, index: LogIndex) -> Result<Option<LogEntry>, Self::Error> {
+        Ok(self.entries.get(index as usize).cloned())
     }
 
     fn get_last_index(&self) -> Result<LogIndex, Self::Error> {
-        todo!()
+        Ok((self.entries.len() - 1) as LogIndex)
     }
 
-    fn get_last_term(&self) -> Result<TermId, Self::Error> {
-        todo!()
+    fn get_last_term(&self) -> Result<Option<TermId>, Self::Error> {
+        Ok(self.entries.last().map(|entry| entry.term_id))
     }
 }

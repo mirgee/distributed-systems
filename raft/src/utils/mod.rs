@@ -1,4 +1,4 @@
-use rand::RngCore;
+use rand_core::RngCore;
 
 pub fn random_election_countdown(
     rng: &mut impl RngCore,

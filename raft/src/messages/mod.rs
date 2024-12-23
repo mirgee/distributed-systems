@@ -6,6 +6,7 @@ use rpc::Rpc;
 
 use crate::node::state::{NodeId, TermId};
 
+#[derive(Debug, Clone)]
 pub struct RaftMessage {
     pub term: TermId,
     pub rpc: Rpc,
