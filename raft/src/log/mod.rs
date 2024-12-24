@@ -17,7 +17,7 @@ pub trait RaftLog {
 
     fn append(&mut self, entry: LogEntry) -> Result<(), Self::Error>;
     fn get(&self, index: LogId) -> Result<Option<LogEntry>, Self::Error>;
-    fn get_last_index(&self) -> Result<LogId, Self::Error>;
+    fn get_last_index(&self) -> Result<Option<LogId>, Self::Error>;
     fn get_last_term(&self) -> Result<Option<TermId>, Self::Error>;
 }
 

@@ -25,10 +25,13 @@ where
     ) -> Option<RaftMessageEnvelope> {
         let vote_granted = (request_vote.last_log_term > self.current_term)
             || (request_vote.last_log_term == self.current_term
-                && request_vote.last_log_index >= self.log_state.log.get_last_index().unwrap());
+                && request_vote.last_log_index
+                    >= self.log_state.log.get_last_index().unwrap().unwrap_or(0))
+                && self.voted_for.map(|vote| vote == from).unwrap_or(true);
         // TODO: Can we vote for a leader if their term is higher than our current term?
         if vote_granted {
             // TODO: Make sure we reset our timer after granting a vote
+            // TODO: Make sure is being reset appropriately
             self.voted_for = Some(from);
         }
 

@@ -92,24 +92,26 @@ where
         }
     }
 
-    // TODO: We should receive and respond with message envelope
     pub fn receive_message(&mut self, message: RaftMessageEnvelope) -> Option<RaftMessageEnvelope> {
         // TODO: We should be resetting the timer only when we receive append entries!
         self.update_term(&message);
 
         let response = match message.msg.rpc {
             Rpc::RequestVote(request_vote) => self.handle_request_vote(request_vote, message.src),
-            Rpc::RequestVoteResponse(request_vote_response) => {
-                // TODO: If respone is stale, drop and do not respond
+            Rpc::RequestVoteResponse(request_vote_response)
+                if message.msg.term >= self.current_term() =>
+            {
                 self.handle_request_vote_response(request_vote_response, message.src)
             }
             Rpc::AppendEntries(append_entries) => {
                 self.handle_append_entries(append_entries, message.src, message.msg.term)
             }
-            Rpc::AppendEntriesResponse(append_entries_response) => {
-                // TODO: If respone is stale, drop and do not respond
+            Rpc::AppendEntriesResponse(append_entries_response)
+                if message.msg.term >= self.current_term() =>
+            {
                 self.handle_append_entries_response(append_entries_response)
             }
+            _ => None,
         };
 
         self.become_leader();
@@ -192,7 +194,7 @@ where
     }
 
     fn majority_size(&self) -> usize {
-        self.peers.len() / 2 + 1
+        (self.peers.len() + 1) / 2 + 1
     }
 
     pub fn current_term(&self) -> TermId {

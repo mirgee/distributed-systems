@@ -24,8 +24,12 @@ impl RaftLog for RaftLogInMemory {
         Ok(self.entries.get(index as usize).cloned())
     }
 
-    fn get_last_index(&self) -> Result<LogId, Self::Error> {
-        Ok((self.entries.len() - 1) as LogId)
+    fn get_last_index(&self) -> Result<Option<LogId>, Self::Error> {
+        if self.entries.len() == 0 {
+            Ok(None)
+        } else {
+            Ok(Some((self.entries.len() - 1) as LogId))
+        }
     }
 
     fn get_last_term(&self) -> Result<Option<TermId>, Self::Error> {
