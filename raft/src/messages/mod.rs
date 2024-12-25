@@ -4,7 +4,7 @@ pub mod rpc;
 
 use rpc::Rpc;
 
-use crate::node::state::{NodeId, TermId};
+use crate::node::{NodeId, TermId};
 
 #[derive(Debug, Clone)]
 pub struct RaftMessage {
@@ -15,8 +15,8 @@ pub struct RaftMessage {
 #[derive(Debug, Clone)]
 pub struct RaftMessageEnvelope {
     pub msg: RaftMessage,
-    pub dst: MessageDestination,
-    pub src: NodeId,
+    pub to: MessageDestination,
+    pub from: NodeId,
 }
 
 #[derive(Debug, Clone)]

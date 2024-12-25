@@ -1,9 +1,9 @@
-use crate::{log::LogId, node::state::TermId};
+use crate::{log::LogId, node::TermId};
 
 #[derive(Debug, Clone)]
 pub struct RequestVote {
     pub last_log_index: LogId,
-    pub last_log_term: TermId
+    pub last_log_term: TermId,
 }
 
 #[derive(Debug, Clone)]

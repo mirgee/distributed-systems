@@ -1,4 +1,4 @@
-use crate::node::state::TermId;
+use crate::node::TermId;
 
 use super::{LogEntry, LogId, RaftLog};
 

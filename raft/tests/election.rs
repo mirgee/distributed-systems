@@ -8,18 +8,18 @@ use raft::{
         request_vote::{RequestVote, RequestVoteResponse},
         rpc::Rpc,
     },
-    node::state::{NodeId, RaftConfig, RaftNode},
+    node::{NodeId, RaftConfig, RaftNode},
 };
 use rand_core::OsRng;
 
-fn create_node(peers: Vec<NodeId>) -> RaftNode<RaftLogInMemory, OsRng> {
+fn create_node(peers: impl IntoIterator<Item = NodeId>) -> RaftNode<RaftLogInMemory, OsRng> {
     let config = RaftConfig {
         heartbeat_interval: 1,
         min_election_countdown: 2,
         max_election_countdown: 3,
     };
     RaftNode::new(
-        0,
+        NodeId(0),
         BTreeSet::from_iter(peers),
         RaftLogInMemory::new(),
         config,
@@ -40,7 +40,7 @@ pub fn candidate_wins_election_as_single_node() {
 
 #[test]
 pub fn candidate_wins_election_by_majority_vote() {
-    let mut node = create_node(vec![1, 2, 3]);
+    let mut node = create_node(vec![1, 2, 3].into_iter().map(|v| NodeId(v)));
     assert!(!node.is_leader());
     let mut msg = None;
     while msg.is_none() {
@@ -53,13 +53,13 @@ pub fn candidate_wins_election_by_majority_vote() {
     };
     let response1 = RaftMessageEnvelope {
         msg: response.clone(),
-        src: 1,
-        dst: MessageDestination::To(0),
+        from: 1.into(),
+        to: MessageDestination::To(0.into()),
     };
     let response2 = RaftMessageEnvelope {
         msg: response,
-        src: 2,
-        dst: MessageDestination::To(0),
+        from: 2.into(),
+        to: MessageDestination::To(0.into()),
     };
     node.receive_message(response1);
     assert!(!node.is_leader());
@@ -69,7 +69,7 @@ pub fn candidate_wins_election_by_majority_vote() {
 
 #[test]
 pub fn candidate_ignores_duplicate_votes() {
-    let mut node = create_node(vec![1, 2, 3]);
+    let mut node = create_node(vec![1, 2, 3].into_iter().map(|v| NodeId(v)));
     assert!(!node.is_leader());
     let mut msg = None;
     while msg.is_none() {
@@ -81,8 +81,8 @@ pub fn candidate_ignores_duplicate_votes() {
             term: node.current_term(),
             rpc: Rpc::RequestVoteResponse(RequestVoteResponse { vote_granted: true }),
         },
-        src: 1,
-        dst: MessageDestination::To(0),
+        from: 1.into(),
+        to: MessageDestination::To(0.into()),
     };
     node.receive_message(response.clone());
     assert!(!node.is_leader());
@@ -94,7 +94,7 @@ pub fn candidate_ignores_duplicate_votes() {
 
 #[test]
 pub fn candidate_ignores_outdated_votes() {
-    let mut node = create_node(vec![1, 2, 3]);
+    let mut node = create_node(vec![1, 2, 3].into_iter().map(|v| NodeId(v)));
     assert!(!node.is_leader());
     let term1 = node.current_term();
     let mut msg = None;
@@ -114,24 +114,24 @@ pub fn candidate_ignores_outdated_votes() {
             term: term1,
             rpc: Rpc::RequestVoteResponse(RequestVoteResponse { vote_granted: true }),
         },
-        src: 1,
-        dst: MessageDestination::To(0),
+        from: 1.into(),
+        to: MessageDestination::To(0.into()),
     };
     let response2 = RaftMessageEnvelope {
         msg: RaftMessage {
             term: term1,
             rpc: Rpc::RequestVoteResponse(RequestVoteResponse { vote_granted: true }),
         },
-        src: 2,
-        dst: MessageDestination::To(0),
+        from: 2.into(),
+        to: MessageDestination::To(0.into()),
     };
     let response3 = RaftMessageEnvelope {
         msg: RaftMessage {
             term: term1,
             rpc: Rpc::RequestVoteResponse(RequestVoteResponse { vote_granted: true }),
         },
-        src: 3,
-        dst: MessageDestination::To(0),
+        from: 3.into(),
+        to: MessageDestination::To(0.into()),
     };
     node.receive_message(response1);
     node.receive_message(response2);
@@ -141,7 +141,7 @@ pub fn candidate_ignores_outdated_votes() {
 
 #[test]
 pub fn follower_resets_election_timer_on_append_entries() {
-    let mut node = create_node(vec![1]);
+    let mut node = create_node(vec![NodeId(1)]);
     assert!(!node.is_leader());
 
     for _ in 0..node.config().min_election_countdown - 1 {
@@ -154,8 +154,8 @@ pub fn follower_resets_election_timer_on_append_entries() {
                 entries: Vec::new(),
             }),
         },
-        src: 1,
-        dst: MessageDestination::To(0),
+        from: 1.into(),
+        to: MessageDestination::To(0.into()),
     };
     node.receive_message(msg);
 
@@ -168,7 +168,7 @@ pub fn follower_resets_election_timer_on_append_entries() {
 
 #[test]
 pub fn candidate_steps_down_on_higher_term() {
-    let mut node = create_node(vec![1]);
+    let mut node = create_node(vec![NodeId(1)]);
     let mut msg = None;
 
     while msg.is_none() {
@@ -183,21 +183,21 @@ pub fn candidate_steps_down_on_higher_term() {
                 entries: Vec::new(),
             }),
         },
-        src: 1,
-        dst: MessageDestination::To(0),
+        from: 1.into(),
+        to: MessageDestination::To(0.into()),
     };
     node.receive_message(higher_term_msg);
 
     assert!(!node.is_leader());
     assert!(matches!(
-        node.role_state,
-        raft::node::state::RoleState::FollowerState(_)
+        node.role_state(),
+        raft::node::RoleState::FollowerState(_)
     ));
 }
 
 #[test]
 pub fn candidate_fails_to_win_due_to_lack_of_majority() {
-    let mut node = create_node(vec![1, 2, 3]);
+    let mut node = create_node(vec![1, 2, 3].into_iter().map(|v| NodeId(v)));
     let mut msg = None;
 
     while msg.is_none() {
@@ -211,8 +211,8 @@ pub fn candidate_fails_to_win_due_to_lack_of_majority() {
             term,
             rpc: Rpc::RequestVoteResponse(RequestVoteResponse { vote_granted: true }),
         },
-        src: 1,
-        dst: MessageDestination::To(0),
+        from: 1.into(),
+        to: MessageDestination::To(0.into()),
     };
     node.receive_message(response);
 
@@ -221,15 +221,15 @@ pub fn candidate_fails_to_win_due_to_lack_of_majority() {
     }
 
     assert!(matches!(
-        node.role_state,
-        raft::node::state::RoleState::CandidateState(_)
+        node.role_state(),
+        raft::node::RoleState::CandidateState(_)
     ));
     assert!(node.current_term() > term);
 }
 
 #[test]
 pub fn candidate_rejects_second_request_vote_in_same_term() {
-    let mut node = create_node(vec![1]);
+    let mut node = create_node(vec![NodeId(1)]);
     let mut msg = None;
 
     while msg.is_none() {
@@ -242,24 +242,24 @@ pub fn candidate_rejects_second_request_vote_in_same_term() {
             term: node.current_term(),
             rpc: Rpc::RequestVote(RequestVote {
                 last_log_index: 0,
-                last_log_term: 0,
+                last_log_term: 0.into(),
             }),
         },
-        src: 1,
-        dst: MessageDestination::To(0),
+        from: 1.into(),
+        to: MessageDestination::To(0.into()),
     };
     node.receive_message(vote_request);
 
     assert!(matches!(
-        node.role_state,
-        raft::node::state::RoleState::CandidateState(_)
+        node.role_state(),
+        raft::node::RoleState::CandidateState(_)
     ));
-    assert!(node.voted_for.is_none());
+    assert!(node.voted_for().is_none());
 }
 
 #[test]
 pub fn follower_rejects_second_vote_in_same_term() {
-    let mut node = create_node(vec![1, 2]);
+    let mut node = create_node(vec![1, 2].into_iter().map(|v| NodeId(v)));
     assert!(!node.is_leader());
 
     let vote_request1 = RaftMessageEnvelope {
@@ -267,11 +267,11 @@ pub fn follower_rejects_second_vote_in_same_term() {
             term: node.current_term(),
             rpc: Rpc::RequestVote(RequestVote {
                 last_log_index: 0,
-                last_log_term: 0,
+                last_log_term: 0.into(),
             }),
         },
-        src: 1,
-        dst: MessageDestination::To(0),
+        from: 1.into(),
+        to: MessageDestination::To(0.into()),
     };
     node.receive_message(vote_request1);
 
@@ -280,13 +280,13 @@ pub fn follower_rejects_second_vote_in_same_term() {
             term: node.current_term(),
             rpc: Rpc::RequestVote(RequestVote {
                 last_log_index: 0,
-                last_log_term: 0,
+                last_log_term: 0.into(),
             }),
         },
-        src: 2,
-        dst: MessageDestination::To(0),
+        from: 2.into(),
+        to: MessageDestination::To(0.into()),
     };
     node.receive_message(vote_request2);
 
-    assert_eq!(node.voted_for.unwrap(), 1);
+    assert_eq!(node.voted_for().unwrap(), 1.into());
 }

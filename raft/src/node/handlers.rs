@@ -1,10 +1,10 @@
-use super::state::{FollowerState, NodeId, RoleState, TermId};
+use super::{identifiers::{NodeId, TermId}, state::{FollowerState, RoleState}};
 use rand_core::RngCore;
 
 use crate::{
     log::RaftLog,
     messages::{
-        MessageDestination, RaftMessage, RaftMessageEnvelope,
+        RaftMessageEnvelope,
         append_entries::{AppendEntries, AppendEntriesResponse},
         request_vote::{RequestVote, RequestVoteResponse},
         rpc::Rpc,
@@ -18,7 +18,33 @@ where
     Log: RaftLog,
     Random: RngCore,
 {
-    pub(super) fn handle_request_vote(
+    pub fn receive_message(&mut self, message: RaftMessageEnvelope) -> Option<RaftMessageEnvelope> {
+        // TODO: We should be resetting the timer only when we receive append entries!
+        self.update_term(&message);
+
+        let response = match message.msg.rpc {
+            Rpc::RequestVote(request_vote) => self.handle_request_vote(request_vote, message.from),
+            Rpc::RequestVoteResponse(request_vote_response)
+                if message.msg.term >= self.current_term() =>
+            {
+                self.handle_request_vote_response(request_vote_response, message.from)
+            }
+            Rpc::AppendEntries(append_entries) => {
+                self.handle_append_entries(append_entries, message.from, message.msg.term)
+            }
+            Rpc::AppendEntriesResponse(append_entries_response)
+                if message.msg.term >= self.current_term() =>
+            {
+                self.handle_append_entries_response(append_entries_response)
+            }
+            _ => None,
+        };
+
+        self.maybe_become_leader();
+        response
+    }
+
+    fn handle_request_vote(
         &mut self,
         request_vote: RequestVote,
         from: NodeId,
@@ -35,17 +61,10 @@ where
             self.voted_for = Some(from);
         }
 
-        Some(RaftMessageEnvelope {
-            msg: RaftMessage {
-                term: self.current_term,
-                rpc: Rpc::RequestVoteResponse(RequestVoteResponse { vote_granted }),
-            },
-            dst: MessageDestination::Broadcast,
-            src: self.node_id,
-        })
+        Some(self.create_request_vote_response_message(vote_granted))
     }
 
-    pub(super) fn handle_request_vote_response(
+    fn handle_request_vote_response(
         &mut self,
         request_vote_response: RequestVoteResponse,
         from: NodeId,
@@ -58,7 +77,7 @@ where
         None
     }
 
-    pub(super) fn handle_append_entries(
+    fn handle_append_entries(
         &mut self,
         append_entries: AppendEntries,
         from: NodeId,
@@ -81,32 +100,25 @@ where
                     });
                 }
             }
-            Some(RaftMessageEnvelope {
-                msg: RaftMessage {
-                    term,
-                    rpc: Rpc::AppendEntriesResponse(AppendEntriesResponse { success: true }),
-                },
-                dst: MessageDestination::To(from),
-                src: self.node_id,
-            })
+            Some(self.create_append_entries_response_message(true, from))
         } else {
-            Some(RaftMessageEnvelope {
-                msg: RaftMessage {
-                    term,
-                    rpc: Rpc::AppendEntriesResponse(AppendEntriesResponse { success: false }),
-                },
-                dst: MessageDestination::To(from),
-                src: self.node_id,
-            })
+            Some(self.create_append_entries_response_message(false, from))
         }
     }
 
-    pub(super) fn handle_append_entries_response(
+    fn handle_append_entries_response(
         &mut self,
         append_entries_response: AppendEntriesResponse,
     ) -> Option<RaftMessageEnvelope> {
         // TODO: If a leader receives rejection on heartbeat rejection, shouldn't they step down? I
         // think so, but can't find that mentioned in the paper.
         None
+    }
+
+    pub fn update_term(&mut self, message: &RaftMessageEnvelope) {
+        if message.msg.term > self.current_term {
+            self.current_term = message.msg.term;
+            self.transition_to_follower_state(Some(message.from));
+        }
     }
 }
