@@ -29,6 +29,7 @@ pub struct RaftNode<Log, Random> {
     rng: Random,
 }
 
+#[derive(Debug, Clone)]
 pub struct RaftConfig {
     pub heartbeat_interval: u32,
     pub min_election_countdown: u32,
